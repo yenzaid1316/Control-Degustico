@@ -1233,7 +1233,7 @@ function abrirSugerencias(){
     <p style="font-size:13px;color:var(--txt2);margin-bottom:12px">Basadas en tu inventario disponible, priorizando lo que tienes en mayor cantidad o por vencer, con margen objetivo de ${DB.config().margen_objetivo_default||50}%.</p>
     <div>${sugerencias.map((s,idx)=>`
       <div class="combo-mini">
-        <div class="top"><span>${s.ingredientes.map(i=>i.nombre+' '+i.pct+'%').join(' + ')}</span><span style="color:var(--green)">${fmt(s.utilidadTotal)}</span></div>
+        <div class="top"><span>${s.ingredientes.map(i=>i.nombre+' '+i.gramos+'g').join(' + ')}</span><span style="color:var(--green)">${fmt(s.utilidadTotal)}</span></div>
         <div class="meta">${s.presentacion} (${s.gramos}g) · costo ${fmt(s.costoBolsa)} · precio ${fmt(s.precio)} · margen ${s.margenReal}%</div>
         <div class="meta">Rinde ${s.maxBolsas} bolsas · sobrante ${fmtNum(s.desperdicioKg)} kg</div>
         <button class="btn btn-primary btn-sm btn-full" style="margin-top:8px" data-producir="${idx}">Producir esta mezcla</button>
@@ -1250,11 +1250,15 @@ function abrirSugerencias(){
 
 function abrirConfirmarProduccion(s){
   const cfg = DB.config();
-  const nombreDefault = s.ingredientes.map(i=>i.nombre+' '+i.pct+'%').join(' + ');
+  const nombreDefault = s.ingredientes.map(i=>i.nombre+' '+i.gramos+'g').join(' + ');
   openDrawer(`
     <div class="drawer-title">Producir mezcla</div>
     <div class="form-group"><label class="form-label">Nombre del combo</label><input class="form-input" id="fm-nombre-combo" value="${nombreDefault}"></div>
-    <p style="font-size:13px;color:var(--txt2)">${s.ingredientes.map(i=>i.nombre+': '+fmtNum(i.gramos*s.maxBolsas)+'g').join(' · ')}</p>
+    <div class="form-group">
+      <label class="form-label">Por cada bolsa (${s.gramos}g)</label>
+      <p style="font-size:14.5px;color:var(--txt)">${s.ingredientes.map(i=>i.nombre+': '+i.gramos+'g').join(' · ')}</p>
+    </div>
+    <p id="preview-total-mezcla" style="font-size:13px;color:var(--txt2);margin-bottom:10px">Total a mezclar para ${s.maxBolsas} bolsas: ${s.ingredientes.map(i=>i.nombre+' '+fmtNum(i.gramos*s.maxBolsas)+'g').join(' · ')}</p>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Bolsas a producir</label><input class="form-input" id="fm-bolsas" type="number" value="${s.maxBolsas}"></div>
       <div class="form-group"><label class="form-label">Costo empaque/bolsa</label><input class="form-input" id="fm-empaque" type="number" value="${cfg.costo_empaque_default||0}"></div>
@@ -1263,12 +1267,16 @@ function abrirConfirmarProduccion(s){
     <div class="form-group"><label class="form-label">Precio de venta</label><input class="form-input" id="fm-precio-combo" type="number" value="${s.precio}"></div>
     <button class="btn btn-primary btn-full" id="btn-confirmar-produccion">Confirmar producción</button>
   `);
+  document.getElementById('fm-bolsas').addEventListener('input', function(){
+    const b = parseFloat(this.value)||0;
+    document.getElementById('preview-total-mezcla').textContent = 'Total a mezclar para '+b+' bolsas: '+s.ingredientes.map(i=>i.nombre+' '+fmtNum(i.gramos*b)+'g').join(' · ');
+  });
   document.getElementById('btn-confirmar-produccion').addEventListener('click', async function(){
     const bolsas = parseFloat(document.getElementById('fm-bolsas').value)||0;
     if(bolsas<=0){ alert('Ingresa una cantidad de bolsas válida'); return; }
     const costo_empaque_unit = parseFloat(document.getElementById('fm-empaque').value)||0;
     const costo_transporte = parseFloat(document.getElementById('fm-transporte-combo').value)||0;
-    const ingredientes = s.ingredientes.map(i=>({nombre:i.nombre, gramos: Math.round((i.gramos/s.maxBolsas)*bolsas)}));
+    const ingredientes = s.ingredientes.map(i=>({nombre:i.nombre, gramos: Math.round(i.gramos*bolsas)}));
     const costo = calcularCostoCombo({ingredientes, bolsas, costo_empaque_unit, costo_transporte});
     this.disabled=true; this.textContent='Guardando...';
     try{
@@ -1366,9 +1374,11 @@ function calcularManualPreview(){
   }
   const costo = calcularCostoCombo({ingredientes, bolsas, costo_empaque_unit:costoEmpaque, costo_transporte:transporte});
   const precio = precioSugerido(costo.costoBolsa, margen);
+  const porBolsa = ingredientes.map(i=>i.nombre+': '+fmtNum(i.gramos/bolsas)+'g').join(' · ');
   cont.innerHTML = `
     <p style="font-size:13px;color:var(--txt2)">Bolsas resultantes: <b style="color:var(--txt)">${bolsas}</b> (sobrante: ${fmtNum(sobrante)}g)</p>
-    <p style="font-size:13px;color:var(--txt2)">Costo neto por bolsa (sin utilidad): <b style="color:var(--txt)">${fmt(costo.costoBolsa)}</b></p>
+    <p style="font-size:13px;color:var(--txt2);margin-top:6px">Gramos por cada bolsa (para pesar): <b style="color:var(--txt)">${porBolsa}</b></p>
+    <p style="font-size:13px;color:var(--txt2);margin-top:6px">Costo neto por bolsa (sin utilidad): <b style="color:var(--txt)">${fmt(costo.costoBolsa)}</b></p>
     <p style="font-size:13px;color:var(--txt2)">Precio de venta sugerido: <b style="color:var(--gold2)">${fmt(precio)}</b></p>
   `;
   return {ingredientes, bolsas, sobrante, costoEmpaque, transporte, precio, costo};
