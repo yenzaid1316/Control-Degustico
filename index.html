@@ -996,7 +996,7 @@ function renderMezclas(){
   renderListaFrutos(frutos);
   renderListaCombos(combosResumen);
 
-  document.getElementById('btn-fruto').addEventListener('click', abrirFormFrutoSeco);
+  document.getElementById('btn-fruto').addEventListener('click', function(){ abrirFormFrutoSeco(); });
   document.getElementById('btn-presentacion').addEventListener('click', abrirFormPresentacion);
   document.getElementById('btn-merma').addEventListener('click', abrirFormMerma);
   document.getElementById('btn-sugerir').addEventListener('click', abrirSugerencias);
@@ -1009,14 +1009,29 @@ function renderListaFrutos(frutos){
   if(!cont) return;
   if(frutos.length===0){ cont.innerHTML = '<div class="vacio">Aún no registras frutos secos</div>'; return; }
   cont.innerHTML = frutos.map(f=>`
-    <div class="item-row">
+    <div class="item-row" data-fruto="${f.nombre}" style="cursor:pointer">
       <div class="info">
         <p class="nom">${f.nombre} ${f.alerta?'<span class="badge vencido">stock bajo</span>':''}</p>
         <p class="sub">Disponible: ${fmtNum(f.disponible)} kg · ${fmt(f.costoKg)}/kg${f.proximoVencimiento?(' · vence '+fmtDateCorta(f.proximoVencimiento)):''}</p>
       </div>
-      <div class="der"><div class="monto">${fmt(f.disponible*f.costoKg)}</div></div>
+      <div class="der">
+        <div class="monto">${fmt(f.disponible*f.costoKg)}</div>
+        <div class="acciones"><button data-vercompras="${f.nombre}" title="Ver / editar compras">✎</button></div>
+      </div>
     </div>
   `).join('');
+  cont.querySelectorAll('[data-fruto]').forEach(el=>{
+    el.addEventListener('click', function(e){
+      if(e.target.closest('[data-vercompras]')) return;
+      abrirHistorialCompras(this.getAttribute('data-fruto'));
+    });
+  });
+  cont.querySelectorAll('[data-vercompras]').forEach(btn=>{
+    btn.addEventListener('click', function(e){
+      e.stopPropagation();
+      abrirHistorialCompras(this.getAttribute('data-vercompras'));
+    });
+  });
 }
 
 function renderListaCombos(combos){
@@ -1041,47 +1056,112 @@ function renderListaCombos(combos){
 }
 
 // ---------- Formularios ----------
-function abrirFormFrutoSeco(){
+function abrirFormFrutoSeco(existente, volverA){
+  const esEdicion = !!existente;
   openDrawer(`
-    <div class="drawer-title">Registrar compra de fruto seco</div>
+    <div class="drawer-title">${esEdicion ? 'Editar compra de '+existente.nombre : 'Registrar compra de fruto seco'}</div>
     <div class="form-group">
       <label class="form-label">Nombre</label>
-      <input class="form-input" id="fm-nombre" type="text" list="dl-frutos" placeholder="Ej: Almendra">
+      <input class="form-input" id="fm-nombre" type="text" list="dl-frutos" placeholder="Ej: Almendra" value="${esEdicion?existente.nombre:''}" ${esEdicion?'disabled':''}>
       <datalist id="dl-frutos">${nombresFrutosSecos().map(n=>`<option value="${n}">`).join('')}</datalist>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Kilogramos</label><input class="form-input" id="fm-kg" type="number" step="0.01" placeholder="10"></div>
-      <div class="form-group"><label class="form-label">Costo por kg</label><input class="form-input" id="fm-costokg" type="number" placeholder="25000"></div>
+      <div class="form-group"><label class="form-label">Kilogramos</label><input class="form-input" id="fm-kg" type="number" step="0.01" placeholder="10" value="${esEdicion?existente.kg:''}"></div>
+      <div class="form-group"><label class="form-label">Costo por kg</label><input class="form-input" id="fm-costokg" type="number" placeholder="25000" value="${esEdicion?existente.costo_kg:''}"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Transporte de esta compra (opcional)</label><input class="form-input" id="fm-transporte" type="number" placeholder="0"></div>
-      <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" id="fm-fecha" type="date" value="${today()}"></div>
+      <div class="form-group"><label class="form-label">Transporte de esta compra (opcional)</label><input class="form-input" id="fm-transporte" type="number" placeholder="0" value="${esEdicion?(existente.transporte||0):''}"></div>
+      <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" id="fm-fecha" type="date" value="${esEdicion?existente.fecha:today()}"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Vencimiento (opcional)</label><input class="form-input" id="fm-venc" type="date"></div>
-      <div class="form-group"><label class="form-label">Alerta stock mínimo (kg)</label><input class="form-input" id="fm-stockmin" type="number" step="0.01" placeholder="1"></div>
+      <div class="form-group"><label class="form-label">Vencimiento (opcional)</label><input class="form-input" id="fm-venc" type="date" value="${esEdicion?(existente.vencimiento||''):''}"></div>
+      <div class="form-group"><label class="form-label">Alerta stock mínimo (kg)</label><input class="form-input" id="fm-stockmin" type="number" step="0.01" placeholder="1" value="${esEdicion?(existente.stock_minimo||''):''}"></div>
     </div>
-    <button class="btn btn-primary btn-full" id="btn-guardar-fruto">Guardar</button>
+    <button class="btn btn-primary btn-full" id="btn-guardar-fruto" style="margin-bottom:8px">${esEdicion?'Guardar cambios':'Guardar'}</button>
+    ${esEdicion?'<button class="btn btn-danger btn-full" id="btn-eliminar-fruto">Eliminar esta compra</button>':''}
   `);
   document.getElementById('btn-guardar-fruto').addEventListener('click', async function(){
-    const nombre = document.getElementById('fm-nombre').value.trim();
+    const nombre = esEdicion ? existente.nombre : document.getElementById('fm-nombre').value.trim();
     const kg = parseFloat(document.getElementById('fm-kg').value);
     const costo_kg = parseFloat(document.getElementById('fm-costokg').value);
     if(!nombre){ alert('Escribe el nombre'); return; }
     if(!kg || kg<=0){ alert('Ingresa un peso válido'); return; }
     if(!costo_kg || costo_kg<=0){ alert('Ingresa un costo por kg válido'); return; }
     this.disabled=true; this.textContent='Guardando...';
+    const payload = {
+      nombre, kg, costo_kg,
+      transporte: parseFloat(document.getElementById('fm-transporte').value)||0,
+      fecha: document.getElementById('fm-fecha').value || today(),
+      vencimiento: document.getElementById('fm-venc').value || '',
+      stock_minimo: parseFloat(document.getElementById('fm-stockmin').value)||0
+    };
     try{
-      await DB.crear('frutosSecos', {
-        nombre, kg, costo_kg,
-        transporte: parseFloat(document.getElementById('fm-transporte').value)||0,
-        fecha: document.getElementById('fm-fecha').value || today(),
-        vencimiento: document.getElementById('fm-venc').value || '',
-        stock_minimo: parseFloat(document.getElementById('fm-stockmin').value)||0
-      });
-      closeDrawer(); renderMezclas();
-      setTimeout(()=>mostrarToast('✅ Compra registrada'),100);
-    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar'; }
+      if(esEdicion){
+        await DB.actualizar('frutosSecos', Object.assign({id:existente.id}, payload));
+        closeDrawer();
+        if(volverA) abrirHistorialCompras(volverA); else renderMezclas();
+        setTimeout(()=>mostrarToast('✅ Compra actualizada'),100);
+      } else {
+        await DB.crear('frutosSecos', payload);
+        abrirConfirmarOtraCompra(volverA);
+      }
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent=esEdicion?'Guardar cambios':'Guardar'; }
+  });
+  const btnDel = document.getElementById('btn-eliminar-fruto');
+  if(btnDel) btnDel.addEventListener('click', async function(){
+    if(!confirm('¿Eliminar esta compra? Se descontará del inventario disponible. No se puede deshacer.')) return;
+    this.disabled=true; this.textContent='Eliminando...';
+    try{
+      await DB.eliminar('frutosSecos', existente.id);
+      closeDrawer();
+      if(volverA) abrirHistorialCompras(volverA); else renderMezclas();
+      setTimeout(()=>mostrarToast('🗑 Compra eliminada'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar esta compra'; }
+  });
+}
+
+function abrirConfirmarOtraCompra(volverA){
+  openDrawer(`
+    <div class="drawer-title">✅ Compra registrada</div>
+    <p style="font-size:14px;color:var(--txt2);margin-bottom:16px">¿Quieres registrar otra compra de fruto seco?</p>
+    <button class="btn btn-primary btn-full" id="btn-otra-compra" style="margin-bottom:8px">+ Registrar otra compra</button>
+    <button class="btn btn-secondary btn-full" id="btn-terminar-compra">Terminar</button>
+  `);
+  document.getElementById('btn-otra-compra').addEventListener('click', function(){
+    abrirFormFrutoSeco(undefined, volverA);
+  });
+  document.getElementById('btn-terminar-compra').addEventListener('click', function(){
+    closeDrawer();
+    if(volverA) abrirHistorialCompras(volverA); else renderMezclas();
+    setTimeout(()=>mostrarToast('✅ Listo'),100);
+  });
+}
+
+function abrirHistorialCompras(nombre){
+  const lotes = DB.frutosSecos().filter(f=>f.nombre===nombre).slice().sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  openDrawer(`
+    <div class="drawer-title">Compras de ${nombre}</div>
+    <div>${lotes.map(l=>`
+      <div class="item-row">
+        <div class="info">
+          <p class="nom">${fmtNum(l.kg)} kg a ${fmt(l.costo_kg)}/kg</p>
+          <p class="sub">${fmtDateCorta(l.fecha)}${l.transporte?(' · transporte '+fmt(l.transporte)):''}</p>
+        </div>
+        <div class="der">
+          <div class="acciones"><button data-editar-lote="${l.id}" title="Editar">✎</button></div>
+        </div>
+      </div>
+    `).join('') || '<div class="vacio">Sin compras registradas</div>'}</div>
+    <button class="btn btn-secondary btn-full" id="btn-nueva-compra" style="margin-top:10px">+ Registrar otra compra de ${nombre}</button>
+  `);
+  document.querySelectorAll('[data-editar-lote]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const lote = DB.frutosSecos().find(f=>f.id===this.getAttribute('data-editar-lote'));
+      if(lote) abrirFormFrutoSeco(lote, nombre);
+    });
+  });
+  document.getElementById('btn-nueva-compra').addEventListener('click', function(){
+    abrirFormFrutoSeco();
   });
 }
 
