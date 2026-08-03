@@ -337,6 +337,21 @@ function inversionMateriaPrimaTotal(){
   DB.frutosSecos().forEach(f=>{ total += (Number(f.kg)||0)*(Number(f.costo_kg)||0) + (Number(f.transporte)||0); });
   return total;
 }
+// ── Productos que se compran y se venden por unidad (no se mezclan) ──
+// Se guardan como combos con tipo:'unidad' e ingredientes vacíos: así reutilizan
+// toda la lógica de venta, inventario, caja y reportes que ya existe.
+function esProductoUnidad(combo){
+  return combo && combo.tipo === 'unidad';
+}
+// Dinero invertido en comprar productos por unidad (su costo total de compra).
+function inversionProductosUnidad(){
+  return DB.combos().filter(esProductoUnidad)
+    .reduce((s,c)=> s + (Number(c.bolsas)||0)*(Number(c.costo_bolsa)||0), 0);
+}
+// Inversión total del negocio en mercancía: materia prima + productos por unidad.
+function inversionTotalMercancia(){
+  return inversionMateriaPrimaTotal() + inversionProductosUnidad();
+}
 
 function calcularCostoCombo({ingredientes, bolsas, costo_empaque_unit, costo_transporte}){
   let costoMateria = 0;
@@ -975,10 +990,12 @@ function renderListaProductos(combos){
   if(combos.length===0){ cont.innerHTML = '<div class="vacio">Aún no hay bolsas producidas. Ve a la pestaña Mezclas para armar combos.</div>'; return; }
   cont.innerHTML = combos.map(c=>{
     const cant = _carrito[c.id]||0;
+    const esUnidad = esProductoUnidad(c);
+    const presentacionTxt = (!esUnidad && Number(c.presentacion_gramos)>0) ? (c.presentacion_gramos+'g · ') : '';
     return `<div class="producto-card">
       <div>
-        <div class="nom">${c.nombre}</div>
-        <div class="sub">${c.presentacion_gramos}g · ${fmt(c.precio_efectivo)} · disp: ${c.bolsas_disponibles}</div>
+        <div class="nom">${c.nombre} ${esUnidad?'<span class="badge pendiente">unidad</span>':''}</div>
+        <div class="sub">${presentacionTxt}${fmt(c.precio_efectivo)} · disp: ${c.bolsas_disponibles}</div>
       </div>
       <div class="stepper">
         <button data-menos="${c.id}">−</button>
@@ -1136,7 +1153,7 @@ function renderMezclas(){
     const precio = Number(c.precio_venta||c.precio_sugerido)||0;
     return s + (Number(c.bolsas)||0)*(precio-(Number(c.costo_bolsa)||0));
   },0);
-  const inversion = inversionMateriaPrimaTotal();
+  const inversion = inversionTotalMercancia();
   const frutos = listaFrutosResumen();
   const combosResumen = listaCombosResumen().slice().sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
 
@@ -1159,6 +1176,7 @@ function renderMezclas(){
         <div class="btn-accion" id="btn-manual"><div class="ico c">✎</div><span class="lbl">Armar combo manual</span></div>
         <div class="btn-accion" id="btn-meta"><div class="ico a">🎯</div><span class="lbl">Meta de ganancia</span></div>
         <div class="btn-accion" id="btn-inventario"><div class="ico c">📦</div><span class="lbl">Inventario detallado</span></div>
+        <div class="btn-accion" id="btn-producto-unidad"><div class="ico a">🥥</div><span class="lbl">Producto por unidad</span></div>
       </div>
     </div>
 
@@ -1183,6 +1201,7 @@ function renderMezclas(){
   document.getElementById('btn-manual').addEventListener('click', abrirComboManual);
   document.getElementById('btn-meta').addEventListener('click', abrirMetaGanancia);
   document.getElementById('btn-inventario').addEventListener('click', renderInventario);
+  document.getElementById('btn-producto-unidad').addEventListener('click', function(){ abrirFormProductoUnidad(); });
   document.getElementById('link-ver-inventario').addEventListener('click', renderInventario);
 }
 
@@ -1222,10 +1241,13 @@ function renderListaCombos(combos){
   if(combos.length===0){ cont.innerHTML = '<div class="vacio">Aún no has producido combos</div>'; return; }
   cont.innerHTML = combos.map(c=>{
     const rot = rotacionDiasCombo(c.id);
+    const esUnidad = esProductoUnidad(c);
+    const unidadTxt = esUnidad ? 'unidades' : 'bolsas';
+    const presentacionTxt = (!esUnidad && Number(c.presentacion_gramos)>0) ? (c.presentacion_gramos+'g · ') : '';
     return `<div class="item-row">
       <div class="info">
-        <p class="nom">${c.nombre}</p>
-        <p class="sub">${c.presentacion_gramos}g · disp: ${c.bolsas_disponibles}/${c.bolsas} · costo ${fmt(c.costo_bolsa)} · precio ${fmt(c.precio_efectivo)}${rot?(' · dura ~'+rot+' días'):''}</p>
+        <p class="nom">${c.nombre} ${esUnidad?'<span class="badge pendiente">por unidad</span>':''}</p>
+        <p class="sub">${presentacionTxt}disp: ${c.bolsas_disponibles}/${c.bolsas} ${unidadTxt} · costo ${fmt(c.costo_bolsa)} · precio ${fmt(c.precio_efectivo)}${rot?(' · dura ~'+rot+' días'):''}</p>
       </div>
       <div class="der">
         <div class="acciones">
@@ -1247,37 +1269,162 @@ function renderListaCombos(combos){
 }
 
 function abrirEditarCombo(combo){
+  const esUnidad = esProductoUnidad(combo);
+  const unidadTxt = esUnidad ? 'unidades' : 'bolsas';
+  const vendidas = combo.bolsas_vendidas||0;
   openDrawer(`
-    <div class="drawer-title">Editar combo</div>
+    <div class="drawer-title">${esUnidad?'Editar producto por unidad':'Editar combo'}</div>
     <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="fm-nombre-combo-edit" value="${combo.nombre}"></div>
-    <div class="form-group"><label class="form-label">Precio de venta</label><input class="form-input" id="fm-precio-combo-edit" type="number" value="${Number(combo.precio_venta||combo.precio_sugerido)||0}"></div>
-    <p style="font-size:12.5px;color:var(--txt2);margin-bottom:12px">Costo neto por bolsa: ${fmt(combo.costo_bolsa)} · ${combo.bolsas_disponibles}/${combo.bolsas} bolsas disponibles</p>
+    ${esUnidad ? `
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Unidades compradas</label><input class="form-input" id="fm-cantidad-combo-edit" type="number" step="1" value="${combo.bolsas}"></div>
+      <div class="form-group"><label class="form-label">Costo por unidad</label><input class="form-input" id="fm-costo-combo-edit" type="number" value="${Number(combo.costo_bolsa)||0}"></div>
+    </div>` : ''}
+    <div class="form-group"><label class="form-label">Precio de venta${esUnidad?' por unidad':''}</label><input class="form-input" id="fm-precio-combo-edit" type="number" value="${Number(combo.precio_venta||combo.precio_sugerido)||0}"></div>
+    <p style="font-size:12.5px;color:var(--txt2);margin-bottom:12px">${esUnidad?'':'Costo neto por bolsa: '+fmt(combo.costo_bolsa)+' · '}${combo.bolsas_disponibles}/${combo.bolsas} ${unidadTxt} disponibles${vendidas>0?(' · '+vendidas+' ya vendidas'):''}</p>
     <button class="btn btn-primary btn-full" id="btn-guardar-combo-edit" style="margin-bottom:8px">Guardar cambios</button>
-    <button class="btn btn-danger btn-full" id="btn-eliminar-combo-edit">Eliminar combo</button>
+    <button class="btn btn-danger btn-full" id="btn-eliminar-combo-edit">Eliminar ${esUnidad?'producto':'combo'}</button>
   `);
   document.getElementById('btn-guardar-combo-edit').addEventListener('click', async function(){
     const nombre = document.getElementById('fm-nombre-combo-edit').value.trim() || combo.nombre;
     const precio_venta = parseFloat(document.getElementById('fm-precio-combo-edit').value)||0;
     if(precio_venta<=0){ alert('Ingresa un precio de venta válido (mayor a 0)'); return; }
+    const cambios = {id:combo.id, nombre, precio_venta};
+    if(esUnidad){
+      const cantidad = parseFloat(document.getElementById('fm-cantidad-combo-edit').value)||0;
+      const costoUnit = parseFloat(document.getElementById('fm-costo-combo-edit').value)||0;
+      if(cantidad<=0){ alert('Ingresa una cantidad válida (mayor a 0)'); return; }
+      if(costoUnit<=0){ alert('Ingresa un costo por unidad válido (mayor a 0)'); return; }
+      if(cantidad < vendidas){
+        if(!confirm('⚠️ Ya vendiste '+vendidas+' unidades y estás dejando la cantidad comprada en '+cantidad+'. El inventario disponible quedaría en cero y las cifras no cuadrarían. ¿Guardar de todas formas?')) return;
+      }
+      cambios.bolsas = cantidad;
+      cambios.costo_bolsa = costoUnit;
+      cambios.costo_materia = cantidad*costoUnit;
+      cambios.costo_total = cantidad*costoUnit;
+      cambios.margen_pct = costoUnit>0 ? Math.round((precio_venta-costoUnit)/costoUnit*100) : 0;
+    }
     this.disabled=true; this.textContent='Guardando...';
     try{
-      await DB.actualizar('combos', {id:combo.id, nombre, precio_venta});
+      await DB.actualizar('combos', cambios);
       closeDrawer(); renderMezclas();
-      setTimeout(()=>mostrarToast('✅ Combo actualizado'),100);
+      setTimeout(()=>mostrarToast(esUnidad?'✅ Producto actualizado':'✅ Combo actualizado'),100);
     } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar cambios'; }
   });
   document.getElementById('btn-eliminar-combo-edit').addEventListener('click', async function(){
-    const vendidas = combo.bolsas_vendidas||0;
-    const msg = vendidas>0
-      ? '¿Eliminar este combo? Ya se vendieron '+vendidas+' bolsas; al eliminarlo se devolverá TODA la materia prima usada (incluida la de las bolsas ya vendidas) al inventario disponible. No se puede deshacer.'
-      : '¿Eliminar este combo? Se devolverá la materia prima usada al inventario disponible. No se puede deshacer.';
+    let msg;
+    if(esUnidad){
+      msg = vendidas>0
+        ? '¿Eliminar este producto? Ya se vendieron '+vendidas+' unidades y esas ventas dejarán de tener producto asociado. No se puede deshacer.'
+        : '¿Eliminar este producto? No se puede deshacer.';
+    } else {
+      msg = vendidas>0
+        ? '¿Eliminar este combo? Ya se vendieron '+vendidas+' bolsas; al eliminarlo se devolverá TODA la materia prima usada (incluida la de las bolsas ya vendidas) al inventario disponible. No se puede deshacer.'
+        : '¿Eliminar este combo? Se devolverá la materia prima usada al inventario disponible. No se puede deshacer.';
+    }
     if(!confirm(msg)) return;
     this.disabled=true; this.textContent='Eliminando...';
     try{
       await DB.eliminar('combos', combo.id);
       closeDrawer(); renderMezclas();
-      setTimeout(()=>mostrarToast('🗑 Combo eliminado'),100);
-    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar combo'; }
+      setTimeout(()=>mostrarToast(esUnidad?'🗑 Producto eliminado':'🗑 Combo eliminado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar '+(esUnidad?'producto':'combo'); }
+  });
+}
+
+// ═══════════════════════════════════════
+// PRODUCTOS QUE SE COMPRAN Y VENDEN POR UNIDAD
+// (no se mezclan; se guardan como producto terminado listo para vender)
+// ═══════════════════════════════════════
+function abrirFormProductoUnidad(){
+  const existentes = DB.combos().filter(esProductoUnidad)
+    .slice().sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  openDrawer(`
+    <div class="drawer-title">Producto por unidad</div>
+    <p style="font-size:13px;color:var(--txt2);margin-bottom:14px">Para lo que compras y vendes por unidad, sin mezclarlo (ej: un coco, una barra). Entra directo al inventario listo para vender.</p>
+    <div class="form-group"><label class="form-label">Nombre del producto</label><input class="form-input" id="fm-nombre-unidad" type="text" placeholder="Ej: Coco deshidratado"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Unidades compradas</label><input class="form-input" id="fm-cantidad-unidad" type="number" step="1" placeholder="Ej: 24"></div>
+      <div class="form-group"><label class="form-label">Costo por unidad</label><input class="form-input" id="fm-costo-unidad" type="number" placeholder="Ej: 1500"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Precio de venta</label><input class="form-input" id="fm-precio-unidad" type="number" placeholder="Ej: 2500"></div>
+      <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" id="fm-fecha-unidad" type="date" value="${today()}"></div>
+    </div>
+    <div class="card" id="resultado-unidad" style="margin-bottom:14px"></div>
+    <button class="btn btn-primary btn-full" id="btn-guardar-unidad" style="margin-bottom:14px">Guardar producto</button>
+    <div class="section-title">Productos por unidad registrados</div>
+    <div id="lista-productos-unidad"></div>
+  `);
+  renderListaProductosUnidad(existentes);
+
+  function recalcularUnidadPreview(){
+    const cantidad = parseFloat(document.getElementById('fm-cantidad-unidad').value)||0;
+    const costo = parseFloat(document.getElementById('fm-costo-unidad').value)||0;
+    const precio = parseFloat(document.getElementById('fm-precio-unidad').value)||0;
+    const cont = document.getElementById('resultado-unidad');
+    if(cantidad<=0 || costo<=0){
+      cont.innerHTML = '<p style="font-size:13px;color:var(--txt2)">Indica cuántas unidades compraste y cuánto te costó cada una.</p>';
+      return;
+    }
+    const margen = precio>0 ? ((precio-costo)/costo*100) : 0;
+    cont.innerHTML = `
+      <p style="font-size:13px;color:var(--txt2)">Inversión total: <b style="color:var(--txt)">${fmt(cantidad*costo)}</b></p>
+      ${precio>0 ? `<p style="font-size:13px;color:var(--txt2);margin-top:6px">Ganancia: <b style="color:${margen>=0?'var(--green)':'var(--red)'}">${fmt(precio-costo)} por unidad (margen ${margen.toFixed(1)}%)</b></p>
+      <p style="font-size:13px;color:var(--txt2);margin-top:6px">Si vendes todo: <b style="color:var(--gold2)">${fmt(cantidad*(precio-costo))}</b> de ganancia</p>`
+      : '<p style="font-size:13px;color:var(--txt2);margin-top:6px">Indica el precio de venta para ver tu margen.</p>'}
+    `;
+  }
+  ['fm-cantidad-unidad','fm-costo-unidad','fm-precio-unidad'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', recalcularUnidadPreview);
+  });
+  recalcularUnidadPreview();
+
+  document.getElementById('btn-guardar-unidad').addEventListener('click', async function(){
+    const nombre = document.getElementById('fm-nombre-unidad').value.trim();
+    const cantidad = parseFloat(document.getElementById('fm-cantidad-unidad').value)||0;
+    const costo = parseFloat(document.getElementById('fm-costo-unidad').value)||0;
+    const precio = parseFloat(document.getElementById('fm-precio-unidad').value)||0;
+    if(!nombre){ alert('Escribe el nombre del producto'); return; }
+    if(cantidad<=0){ alert('Ingresa una cantidad válida (mayor a 0)'); return; }
+    if(costo<=0){ alert('Ingresa un costo por unidad válido (mayor a 0)'); return; }
+    if(precio<=0){ alert('Ingresa un precio de venta válido (mayor a 0)'); return; }
+    this.disabled=true; this.textContent='Guardando...';
+    try{
+      await DB.crear('combos', {
+        nombre, ingredientes: [], presentacion_gramos: 0, bolsas: cantidad,
+        costo_empaque_unit: 0, costo_transporte: 0,
+        costo_materia: cantidad*costo, costo_total: cantidad*costo, costo_bolsa: costo,
+        margen_pct: Math.round((precio-costo)/costo*100),
+        precio_sugerido: precio, precio_venta: precio,
+        tipo: 'unidad', fecha: document.getElementById('fm-fecha-unidad').value || today()
+      });
+      closeDrawer(); renderMezclas();
+      setTimeout(()=>mostrarToast('✅ Producto agregado, listo para vender'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar producto'; }
+  });
+}
+
+function renderListaProductosUnidad(lista){
+  const cont = document.getElementById('lista-productos-unidad');
+  if(!cont) return;
+  if(lista.length===0){ cont.innerHTML = '<div class="vacio">Todavía no registras productos por unidad</div>'; return; }
+  const resumen = listaCombosResumen();
+  cont.innerHTML = lista.map(p=>{
+    const r = resumen.find(x=>x.id===p.id) || p;
+    return `<div class="item-row">
+      <div class="info">
+        <p class="nom">${p.nombre}</p>
+        <p class="sub">disp: ${r.bolsas_disponibles}/${p.bolsas} unidades · costo ${fmt(p.costo_bolsa)} · precio ${fmt(p.precio_venta||p.precio_sugerido)}</p>
+      </div>
+      <div class="der"><div class="acciones"><button data-editar-unidad="${p.id}" title="Editar">✎</button></div></div>
+    </div>`;
+  }).join('');
+  cont.querySelectorAll('[data-editar-unidad]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const c = listaCombosResumen().find(x=>x.id===this.getAttribute('data-editar-unidad'));
+      if(c) abrirEditarCombo(c);
+    });
   });
 }
 
@@ -1936,17 +2083,20 @@ async function generarFichaCombo(comboId, btn){
   const textoOriginal = btn ? btn.textContent : null;
   if(btn){ btn.disabled = true; btn.textContent = '⏳'; }
   try{
+    const esUnidad = esProductoUnidad(c);
     const doc = pdfCrear(30+12+ (c.ingredientes||[]).length*7.5 + 40);
-    let y = pdfHeader(doc, c.nombre, 'Ficha de producción');
-    y = pdfSeccionTitulo(doc, y, 'Ingredientes (total lote)');
-    (c.ingredientes||[]).forEach(ing=>{
-      y = pdfFilaTabla(doc, y, ing.nombre, '', fmtNum(ing.gramos)+' g');
-    });
-    y += 3;
-    y = pdfFila(doc, y, 'Presentación', c.presentacion_gramos+' g', false);
-    y = pdfFila(doc, y, 'Bolsas producidas', String(c.bolsas), true);
+    let y = pdfHeader(doc, c.nombre, esUnidad ? 'Producto por unidad' : 'Ficha de producción');
+    if(!esUnidad){
+      y = pdfSeccionTitulo(doc, y, 'Ingredientes (total lote)');
+      (c.ingredientes||[]).forEach(ing=>{
+        y = pdfFilaTabla(doc, y, ing.nombre, '', fmtNum(ing.gramos)+' g');
+      });
+      y += 3;
+      y = pdfFila(doc, y, 'Presentación', c.presentacion_gramos+' g', false);
+    }
+    y = pdfFila(doc, y, esUnidad?'Unidades compradas':'Bolsas producidas', String(c.bolsas), true);
     y = pdfFila(doc, y, 'Disponibles', String(c.bolsas_disponibles), false);
-    y = pdfFila(doc, y, 'Costo por bolsa', fmt(c.costo_bolsa), true);
+    y = pdfFila(doc, y, esUnidad?'Costo por unidad':'Costo por bolsa', fmt(c.costo_bolsa), true);
     y += 3;
     pdfCajaSaldo(doc, y, 'Precio de venta', fmt(c.precio_efectivo));
     const blob = doc.output('blob');
