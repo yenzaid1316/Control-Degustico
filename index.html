@@ -9,7 +9,7 @@
 <title>Control DEGUSTICO</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{
@@ -1652,7 +1652,6 @@ function abrirConfirmarProduccion(s){
       <div class="form-group"><label class="form-label">Bolsas a producir</label><input class="form-input" id="fm-bolsas" type="number" value="${s.maxBolsas}"></div>
       <div class="form-group"><label class="form-label">Costo empaque/bolsa</label><input class="form-input" id="fm-empaque" type="number" value="${cfg.costo_empaque_default||0}"></div>
     </div>
-    <div class="form-group"><label class="form-label">Transporte de esta producción (opcional)</label><input class="form-input" id="fm-transporte-combo" type="number" value="0"></div>
     <div class="form-group"><label class="form-label">Precio de venta</label><input class="form-input" id="fm-precio-combo" type="number" value="${s.precio}"></div>
     <div class="card" id="resultado-produccion" style="margin-bottom:14px"></div>
     <button class="btn btn-primary btn-full" id="btn-confirmar-produccion">Confirmar producción</button>
@@ -1661,7 +1660,7 @@ function abrirConfirmarProduccion(s){
     const bolsas = parseFloat(document.getElementById('fm-bolsas').value)||0;
     document.getElementById('preview-total-mezcla').textContent = 'Total a mezclar para '+bolsas+' bolsas: '+s.ingredientes.map(i=>i.nombre+' '+fmtNum(i.gramos*bolsas)+'g').join(' · ');
     const costoEmpaque = parseFloat(document.getElementById('fm-empaque').value)||0;
-    const transporte = parseFloat(document.getElementById('fm-transporte-combo').value)||0;
+    const transporte = 0; // el flete ya se incluye desde el registro de la compra del fruto seco
     const precio = parseFloat(document.getElementById('fm-precio-combo').value)||0;
     const cont = document.getElementById('resultado-produccion');
     if(bolsas<=0){ cont.innerHTML = '<p style="font-size:13px;color:var(--txt2)">Indica cuántas bolsas vas a producir.</p>'; return; }
@@ -1673,7 +1672,7 @@ function abrirConfirmarProduccion(s){
       <p style="font-size:13px;color:var(--txt2);margin-top:6px">Con precio de ${fmt(precio)}: <b style="color:${margenReal>=0?'var(--green)':'var(--red)'}">${fmt(precio-costo.costoBolsa)} por bolsa (margen ${margenReal.toFixed(1)}%)</b></p>
     `;
   }
-  ['fm-bolsas','fm-empaque','fm-transporte-combo','fm-precio-combo'].forEach(id=>{
+  ['fm-bolsas','fm-empaque','fm-precio-combo'].forEach(id=>{
     document.getElementById(id).addEventListener('input', recalcularProduccionPreview);
   });
   recalcularProduccionPreview();
@@ -1681,9 +1680,9 @@ function abrirConfirmarProduccion(s){
     const bolsas = parseFloat(document.getElementById('fm-bolsas').value)||0;
     if(bolsas<=0){ alert('Ingresa una cantidad de bolsas válida'); return; }
     const costo_empaque_unit = parseFloat(document.getElementById('fm-empaque').value)||0;
-    const costo_transporte = parseFloat(document.getElementById('fm-transporte-combo').value)||0;
+    const costo_transporte = 0; // el flete ya se incluye desde el registro de la compra del fruto seco
     const precioVenta = parseFloat(document.getElementById('fm-precio-combo').value)||0;
-    if(costo_empaque_unit<0 || costo_transporte<0){ alert('El empaque y el transporte no pueden ser negativos'); return; }
+    if(costo_empaque_unit<0){ alert('El empaque no puede ser negativo'); return; }
     if(precioVenta<=0){ alert('Ingresa un precio de venta válido (mayor a 0)'); return; }
     const ingredientes = s.ingredientes.map(i=>({nombre:i.nombre, gramos: Math.round(i.gramos*bolsas)}));
     const costo = calcularCostoCombo({ingredientes, bolsas, costo_empaque_unit, costo_transporte});
@@ -1723,7 +1722,6 @@ function renderComboManualDrawer(){
       <div class="form-group"><label class="form-label">Bolsas a producir</label><input class="form-input" id="fm-bolsas-manual" type="number" placeholder="Ej: 20"></div>
       <div class="form-group"><label class="form-label">Costo empaque/bolsa</label><input class="form-input" id="fm-empaque-manual" type="number" value="${cfg.costo_empaque_default||0}"></div>
     </div>
-    <div class="form-group"><label class="form-label">Transporte de esta producción (opcional)</label><input class="form-input" id="fm-transporte-manual" type="number" value="0"></div>
     <div class="form-group"><label class="form-label">Precio de venta deseado</label><input class="form-input" id="fm-precio-manual" type="number" placeholder="Ej: 3000"></div>
     <div class="card" id="resultado-manual" style="margin-bottom:14px"></div>
     <button class="btn btn-secondary btn-full" id="btn-calcular-manual" style="margin-bottom:8px">Calcular costo y margen</button>
@@ -1763,7 +1761,7 @@ function calcularManualPreview(){
   const porBolsa = leerIngredientesManual(); // gramos por CADA bolsa
   const bolsas = parseFloat(document.getElementById('fm-bolsas-manual').value)||0;
   const costoEmpaque = parseFloat(document.getElementById('fm-empaque-manual').value)||0;
-  const transporte = parseFloat(document.getElementById('fm-transporte-manual').value)||0;
+  const transporte = 0; // el flete ya se incluye desde el registro de la compra del fruto seco
   const precioDeseado = parseFloat(document.getElementById('fm-precio-manual').value)||0;
   const cont = document.getElementById('resultado-manual');
   if(porBolsa.length===0){
@@ -2181,3 +2179,6 @@ document.addEventListener('visibilitychange', function(){
   renderScreen();
   setTimeout(()=>mostrarToast('✅ Datos actualizados'), 300);
 })();
+</script>
+</body>
+</html>
