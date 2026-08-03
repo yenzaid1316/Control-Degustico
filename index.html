@@ -279,18 +279,35 @@ function kgUsadoEnCombos(nombre){
   return total;
 }
 function costoPorGramo(nombre){
+  // Costo promedio ponderado por gramo, incluyendo el flete de cada compra
+  // repartido de forma equitativa entre los kilos de esa misma compra.
   const lotes = DB.frutosSecos().filter(f=>f.nombre===nombre);
   let kgTotal=0, costoTotal=0;
   lotes.forEach(l=>{
     const kg = Number(l.kg)||0;
     kgTotal += kg;
-    costoTotal += kg*(Number(l.costo_kg)||0);
+    costoTotal += kg*(Number(l.costo_kg)||0) + (Number(l.transporte)||0);
   });
   if(kgTotal<=0) return 0;
   return (costoTotal/kgTotal)/1000;
 }
 function transporteTotalCompras(nombre){
   return DB.frutosSecos().filter(f=>f.nombre===nombre).reduce((s,f)=>s+(Number(f.transporte)||0),0);
+}
+function inversionPorFruto(nombre){
+  return DB.frutosSecos().filter(f=>f.nombre===nombre).reduce((s,f)=>s+(Number(f.kg)||0)*(Number(f.costo_kg)||0)+(Number(f.transporte)||0),0);
+}
+// Proyecta cuánto quedaría "disponible" de un fruto si se cambia el kg de UNA compra
+// (kgAntes -> kgDespues; usar kgDespues=0 para simular una eliminación).
+// Si el resultado es negativo, significa que ya se comprometió (en merma o en combos)
+// más materia prima de la que quedaría tras el cambio, y los cálculos de costo/inventario
+// de ese fruto quedarían desincronizados con la realidad.
+function proyectarDisponibleTrasCambioCompra(nombre, kgAntes, kgDespues){
+  const compradoActual = kgCompradoTotal(nombre);
+  const nuevoComprado = compradoActual - (Number(kgAntes)||0) + (Number(kgDespues)||0);
+  const merma = kgMermaTotal(nombre);
+  const usado = kgUsadoEnCombos(nombre);
+  return nuevoComprado - merma - usado;
 }
 function nombresFrutosSecos(){
   const set = {};
@@ -582,6 +599,7 @@ function renderNegocio(){
         <div class="btn-accion" id="btn-gasto"><div class="ico b">−</div><span class="lbl">Registrar gasto</span></div>
         <div class="btn-accion" id="btn-inyectar"><div class="ico c">+</div><span class="lbl">Inyectar capital</span></div>
         <div class="btn-accion" id="btn-clientes"><div class="ico c">☰</div><span class="lbl">Ver cartera</span></div>
+        <div class="btn-accion" id="btn-historial-mov"><div class="ico c">📜</div><span class="lbl">Historial movimientos</span></div>
       </div>
     </div>
 
@@ -606,6 +624,7 @@ function renderNegocio(){
   document.getElementById('btn-clientes').addEventListener('click', ()=>{
     document.getElementById('lista-cartera').scrollIntoView({behavior:'smooth'});
   });
+  document.getElementById('btn-historial-mov').addEventListener('click', abrirHistorialMovimientos);
 }
 
 function renderListaCartera(clientes){
@@ -682,10 +701,76 @@ function abrirFormMovimiento(tipo){
     if(!monto || monto<=0){ alert('Ingresa un monto válido'); return; }
     this.disabled=true; this.textContent='Guardando...';
     try{
-      await DB.crear('movimientos', {tipo, motivo, monto});
+      await DB.crear('movimientos', {tipo, motivo, monto, fecha});
       closeDrawer(); renderNegocio();
       setTimeout(()=>mostrarToast('✅ Registrado'),100);
     } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar'; }
+  });
+}
+
+function abrirHistorialMovimientos(){
+  const movs = DB.movimientos().slice().sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  openDrawer(`
+    <div class="drawer-title">Historial de movimientos</div>
+    <div>${movs.map(m=>`
+      <div class="item-row">
+        <div class="info">
+          <p class="nom">${TIPO_MOV_LABEL[m.tipo]||m.tipo}</p>
+          <p class="sub">${fmtDateCorta(m.fecha)}${m.motivo?(' · '+m.motivo):''}</p>
+        </div>
+        <div class="der">
+          <div class="monto ${m.tipo==='inyeccion'?'entrada':'salida'}">${fmt(m.monto)}</div>
+          <div class="acciones"><button data-editar-mov="${m.id}" title="Editar">✎</button></div>
+        </div>
+      </div>
+    `).join('') || '<div class="vacio">Sin movimientos registrados</div>'}</div>
+  `);
+  document.querySelectorAll('[data-editar-mov]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const m = DB.movimientos().find(x=>x.id===this.getAttribute('data-editar-mov'));
+      if(m) abrirEditarMovimiento(m);
+    });
+  });
+}
+
+function abrirEditarMovimiento(mov){
+  openDrawer(`
+    <div class="drawer-title">Editar ${(TIPO_MOV_LABEL[mov.tipo]||mov.tipo).toLowerCase()}</div>
+    <div class="form-group">
+      <label class="form-label">Fecha</label>
+      <input class="form-input" id="fm-fecha-mov-edit" type="date" value="${mov.fecha||today()}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">${mov.tipo==='gasto'?'Motivo del gasto':'Descripción (opcional)'}</label>
+      <input class="form-input" id="fm-motivo-mov-edit" type="text" value="${mov.motivo||''}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Monto</label>
+      <input class="form-input" id="fm-monto-mov-edit" type="number" value="${mov.monto}">
+    </div>
+    <button class="btn btn-primary btn-full" id="btn-guardar-mov-edit" style="margin-bottom:8px">Guardar cambios</button>
+    <button class="btn btn-danger btn-full" id="btn-eliminar-mov-edit">Eliminar</button>
+  `);
+  document.getElementById('btn-guardar-mov-edit').addEventListener('click', async function(){
+    const monto = parseFloat(document.getElementById('fm-monto-mov-edit').value);
+    if(!monto || monto<=0){ alert('Ingresa un monto válido'); return; }
+    this.disabled=true; this.textContent='Guardando...';
+    try{
+      await DB.actualizar('movimientos', {id:mov.id, fecha:document.getElementById('fm-fecha-mov-edit').value||mov.fecha, motivo:document.getElementById('fm-motivo-mov-edit').value.trim(), monto});
+      closeDrawer();
+      abrirHistorialMovimientos();
+      setTimeout(()=>mostrarToast('✅ Movimiento actualizado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar cambios'; }
+  });
+  document.getElementById('btn-eliminar-mov-edit').addEventListener('click', async function(){
+    if(!confirm('¿Eliminar este movimiento?')) return;
+    this.disabled=true; this.textContent='Eliminando...';
+    try{
+      await DB.eliminar('movimientos', mov.id);
+      closeDrawer();
+      abrirHistorialMovimientos();
+      setTimeout(()=>mostrarToast('🗑 Movimiento eliminado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar'; }
   });
 }
 
@@ -693,8 +778,11 @@ function abrirDetalleCliente(clienteId){
   const cliente = DB.clientes().find(c=>c.id===clienteId);
   if(!cliente) return;
   const cart = carteraCliente(clienteId);
+  const puedeEliminar = cart.totalAdeudado<=0.5;
   openDrawer(`
     <div class="drawer-title">${cliente.nombre}</div>
+    <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="fm-nombre-cliente" value="${cliente.nombre}"></div>
+    <div class="form-group"><label class="form-label">Teléfono (opcional)</label><input class="form-input" id="fm-telefono-cliente" type="text" value="${cliente.telefono||''}"></div>
     <div class="form-group">
       <label class="form-label">Límite de crédito ($, 0 = sin límite)</label>
       <div class="form-row">
@@ -702,6 +790,7 @@ function abrirDetalleCliente(clienteId){
         <button class="btn btn-secondary" id="btn-guardar-limite">Guardar</button>
       </div>
     </div>
+    ${puedeEliminar ? '<button class="btn btn-danger btn-full" id="btn-eliminar-cliente" style="margin-bottom:10px">Eliminar cliente</button>' : '<p style="font-size:12.5px;color:var(--txt2);margin-bottom:10px">No puedes eliminar este cliente mientras tenga cartera pendiente.</p>'}
     <p style="font-size:13px;color:var(--txt2);margin:10px 0 4px">Total adeudado: <b style="color:var(--txt)">${fmt(cart.totalAdeudado)}</b></p>
     <div class="section-title" style="margin-top:10px">Historial de pagos</div>
     <div>${cart.detalle.map(v=>`
@@ -711,21 +800,101 @@ function abrirDetalleCliente(clienteId){
           <p class="sub">Pendiente: ${fmt(v.pendiente)} · <span class="badge ${v.estado}">${v.estado}</span> ${v.dias?('· día '+v.dias):''}</p>
         </div>
         <div class="der">
+          ${v.abonado>0 ? `<button class="btn btn-secondary btn-sm" data-ver-abonos="${v.id}">Abonos</button>` : ''}
           ${v.pendiente>0 ? `<button class="btn btn-secondary btn-sm" data-abonar="${v.id}">Abonar</button>` : ''}
         </div>
       </div>`).join('') || '<div class="vacio">Sin ventas a crédito</div>'}
     </div>
   `);
   document.getElementById('btn-guardar-limite').addEventListener('click', async function(){
+    const nombre = document.getElementById('fm-nombre-cliente').value.trim() || cliente.nombre;
+    const telefono = document.getElementById('fm-telefono-cliente').value.trim();
+    const limite_credito = parseFloat(document.getElementById('fm-limite').value)||0;
+    if(limite_credito<0){ alert('El límite de crédito no puede ser un número negativo'); return; }
     this.disabled=true; this.textContent='Guardando...';
     try{
-      await DB.actualizar('clientes', {id:clienteId, limite_credito: parseFloat(document.getElementById('fm-limite').value)||0});
-      mostrarToast('✅ Límite actualizado');
+      await DB.actualizar('clientes', {id:clienteId, nombre, telefono, limite_credito});
+      mostrarToast('✅ Datos actualizados');
+      const titulo = document.querySelector('.drawer-title');
+      if(titulo) titulo.textContent = nombre;
     } catch(e){ mostrarToast('❌ '+e.message); }
     this.disabled=false; this.textContent='Guardar';
   });
+  const btnDelCliente = document.getElementById('btn-eliminar-cliente');
+  if(btnDelCliente) btnDelCliente.addEventListener('click', async function(){
+    if(!confirm('¿Eliminar este cliente? No se puede deshacer.')) return;
+    this.disabled=true; this.textContent='Eliminando...';
+    try{
+      await DB.eliminar('clientes', clienteId);
+      closeDrawer(); renderNegocio();
+      setTimeout(()=>mostrarToast('🗑 Cliente eliminado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar cliente'; }
+  });
   document.querySelectorAll('[data-abonar]').forEach(btn=>{
     btn.addEventListener('click', function(){ abrirFormAbono(this.getAttribute('data-abonar'), clienteId); });
+  });
+  document.querySelectorAll('[data-ver-abonos]').forEach(btn=>{
+    btn.addEventListener('click', function(){ abrirListaAbonos(this.getAttribute('data-ver-abonos'), clienteId); });
+  });
+}
+
+function abrirListaAbonos(ventaId, clienteId){
+  const venta = DB.ventas().find(v=>v.id===ventaId);
+  const abonos = DB.abonos().filter(a=>a.venta_id===ventaId).slice().sort((a,b)=>(b.fecha||'').localeCompare(a.fecha||''));
+  openDrawer(`
+    <div class="drawer-title">Abonos de la venta</div>
+    <p style="font-size:13px;color:var(--txt2);margin-bottom:12px">Total de la venta: <b style="color:var(--txt)">${fmt(venta.total)}</b></p>
+    <div>${abonos.map(a=>`
+      <div class="item-row">
+        <div class="info"><p class="nom">${fmt(a.monto)}</p><p class="sub">${fmtDateCorta(a.fecha)}</p></div>
+        <div class="der"><div class="acciones"><button data-editar-abono="${a.id}" title="Editar">✎</button></div></div>
+      </div>
+    `).join('') || '<div class="vacio">Sin abonos registrados</div>'}</div>
+    <button class="btn btn-secondary btn-full" id="btn-volver-cliente" style="margin-top:10px">← Volver</button>
+  `);
+  document.querySelectorAll('[data-editar-abono]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const a = DB.abonos().find(x=>x.id===this.getAttribute('data-editar-abono'));
+      if(a) abrirEditarAbono(a, ventaId, clienteId);
+    });
+  });
+  document.getElementById('btn-volver-cliente').addEventListener('click', function(){ abrirDetalleCliente(clienteId); });
+}
+
+function abrirEditarAbono(abono, ventaId, clienteId){
+  const venta = DB.ventas().find(v=>v.id===ventaId);
+  const estActual = venta ? estadoCredito(venta) : {pendiente:0};
+  const pendienteSinEsteAbono = estActual.pendiente + (Number(abono.monto)||0); // lo que quedaría pendiente si este abono no existiera
+  openDrawer(`
+    <div class="drawer-title">Editar abono</div>
+    <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" id="fm-fecha-abono-edit" type="date" value="${abono.fecha}"></div>
+    <div class="form-group"><label class="form-label">Monto</label><input class="form-input" id="fm-monto-abono-edit" type="number" value="${abono.monto}"></div>
+    <button class="btn btn-primary btn-full" id="btn-guardar-abono-edit" style="margin-bottom:8px">Guardar cambios</button>
+    <button class="btn btn-danger btn-full" id="btn-eliminar-abono-edit">Eliminar abono</button>
+  `);
+  document.getElementById('btn-guardar-abono-edit').addEventListener('click', async function(){
+    const monto = parseFloat(document.getElementById('fm-monto-abono-edit').value);
+    if(!monto || monto<=0){ alert('Ingresa un monto válido'); return; }
+    if(monto > pendienteSinEsteAbono + 0.5){
+      if(!confirm('Este abono ('+fmt(monto)+') dejaría el pendiente en negativo (la deuda sin este abono es '+fmt(pendienteSinEsteAbono)+'). ¿Continuar de todas formas?')) return;
+    }
+    this.disabled=true; this.textContent='Guardando...';
+    try{
+      await DB.actualizar('abonos', {id:abono.id, monto, fecha:document.getElementById('fm-fecha-abono-edit').value||abono.fecha});
+      closeDrawer();
+      abrirListaAbonos(ventaId, clienteId);
+      setTimeout(()=>mostrarToast('✅ Abono actualizado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar cambios'; }
+  });
+  document.getElementById('btn-eliminar-abono-edit').addEventListener('click', async function(){
+    if(!confirm('¿Eliminar este abono? El pendiente del cliente aumentará nuevamente.')) return;
+    this.disabled=true; this.textContent='Eliminando...';
+    try{
+      await DB.eliminar('abonos', abono.id);
+      closeDrawer();
+      abrirListaAbonos(ventaId, clienteId);
+      setTimeout(()=>mostrarToast('🗑 Abono eliminado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar abono'; }
   });
 }
 
@@ -749,6 +918,9 @@ function abrirFormAbono(ventaId, clienteId){
     const fecha = document.getElementById('fm-fecha-abono').value;
     const monto = parseFloat(document.getElementById('fm-monto-abono').value);
     if(!monto || monto<=0){ alert('Ingresa un monto válido'); return; }
+    if(monto > est.pendiente + 0.5){
+      if(!confirm('El abono ('+fmt(monto)+') es mayor que lo pendiente ('+fmt(est.pendiente)+'). El excedente no quedará registrado como saldo a favor en ningún lado. ¿Continuar de todas formas?')) return;
+    }
     this.disabled=true; this.textContent='Guardando...';
     try{
       await DB.crear('abonos', {venta_id:ventaId, monto, fecha});
@@ -986,11 +1158,12 @@ function renderMezclas(){
         <div class="btn-accion" id="btn-sugerir"><div class="ico a">✨</div><span class="lbl">Sugerir mezclas</span></div>
         <div class="btn-accion" id="btn-manual"><div class="ico c">✎</div><span class="lbl">Armar combo manual</span></div>
         <div class="btn-accion" id="btn-meta"><div class="ico a">🎯</div><span class="lbl">Meta de ganancia</span></div>
+        <div class="btn-accion" id="btn-inventario"><div class="ico c">📦</div><span class="lbl">Inventario detallado</span></div>
       </div>
     </div>
 
     <div class="section">
-      <div class="section-title">Frutos secos en inventario</div>
+      <div class="section-title">Frutos secos en inventario<span id="link-ver-inventario" style="font-size:12px;color:var(--gold2);cursor:pointer;text-transform:none">Ver detalle →</span></div>
       <div id="lista-frutos"></div>
     </div>
 
@@ -1004,11 +1177,13 @@ function renderMezclas(){
   renderListaCombos(combosResumen);
 
   document.getElementById('btn-fruto').addEventListener('click', function(){ abrirFormFrutoSeco(); });
-  document.getElementById('btn-presentacion').addEventListener('click', abrirFormPresentacion);
-  document.getElementById('btn-merma').addEventListener('click', abrirFormMerma);
+  document.getElementById('btn-presentacion').addEventListener('click', function(){ abrirFormPresentacion(); });
+  document.getElementById('btn-merma').addEventListener('click', function(){ abrirFormMerma(); });
   document.getElementById('btn-sugerir').addEventListener('click', abrirSugerencias);
   document.getElementById('btn-manual').addEventListener('click', abrirComboManual);
   document.getElementById('btn-meta').addEventListener('click', abrirMetaGanancia);
+  document.getElementById('btn-inventario').addEventListener('click', renderInventario);
+  document.getElementById('link-ver-inventario').addEventListener('click', renderInventario);
 }
 
 function renderListaFrutos(frutos){
@@ -1053,12 +1228,56 @@ function renderListaCombos(combos){
         <p class="sub">${c.presentacion_gramos}g · disp: ${c.bolsas_disponibles}/${c.bolsas} · costo ${fmt(c.costo_bolsa)} · precio ${fmt(c.precio_efectivo)}${rot?(' · dura ~'+rot+' días'):''}</p>
       </div>
       <div class="der">
-        <div class="acciones"><button data-ficha="${c.id}" title="Ficha PDF">📄</button></div>
+        <div class="acciones">
+          <button data-editar-combo="${c.id}" title="Editar">✎</button>
+          <button data-ficha="${c.id}" title="Ficha PDF">📄</button>
+        </div>
       </div>
     </div>`;
   }).join('');
   cont.querySelectorAll('[data-ficha]').forEach(btn=>{
     btn.addEventListener('click', function(){ generarFichaCombo(this.getAttribute('data-ficha'), this); });
+  });
+  cont.querySelectorAll('[data-editar-combo]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const c = combos.find(x=>x.id===this.getAttribute('data-editar-combo'));
+      if(c) abrirEditarCombo(c);
+    });
+  });
+}
+
+function abrirEditarCombo(combo){
+  openDrawer(`
+    <div class="drawer-title">Editar combo</div>
+    <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="fm-nombre-combo-edit" value="${combo.nombre}"></div>
+    <div class="form-group"><label class="form-label">Precio de venta</label><input class="form-input" id="fm-precio-combo-edit" type="number" value="${Number(combo.precio_venta||combo.precio_sugerido)||0}"></div>
+    <p style="font-size:12.5px;color:var(--txt2);margin-bottom:12px">Costo neto por bolsa: ${fmt(combo.costo_bolsa)} · ${combo.bolsas_disponibles}/${combo.bolsas} bolsas disponibles</p>
+    <button class="btn btn-primary btn-full" id="btn-guardar-combo-edit" style="margin-bottom:8px">Guardar cambios</button>
+    <button class="btn btn-danger btn-full" id="btn-eliminar-combo-edit">Eliminar combo</button>
+  `);
+  document.getElementById('btn-guardar-combo-edit').addEventListener('click', async function(){
+    const nombre = document.getElementById('fm-nombre-combo-edit').value.trim() || combo.nombre;
+    const precio_venta = parseFloat(document.getElementById('fm-precio-combo-edit').value)||0;
+    if(precio_venta<=0){ alert('Ingresa un precio de venta válido (mayor a 0)'); return; }
+    this.disabled=true; this.textContent='Guardando...';
+    try{
+      await DB.actualizar('combos', {id:combo.id, nombre, precio_venta});
+      closeDrawer(); renderMezclas();
+      setTimeout(()=>mostrarToast('✅ Combo actualizado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar cambios'; }
+  });
+  document.getElementById('btn-eliminar-combo-edit').addEventListener('click', async function(){
+    const vendidas = combo.bolsas_vendidas||0;
+    const msg = vendidas>0
+      ? '¿Eliminar este combo? Ya se vendieron '+vendidas+' bolsas; al eliminarlo se devolverá TODA la materia prima usada (incluida la de las bolsas ya vendidas) al inventario disponible. No se puede deshacer.'
+      : '¿Eliminar este combo? Se devolverá la materia prima usada al inventario disponible. No se puede deshacer.';
+    if(!confirm(msg)) return;
+    this.disabled=true; this.textContent='Eliminando...';
+    try{
+      await DB.eliminar('combos', combo.id);
+      closeDrawer(); renderMezclas();
+      setTimeout(()=>mostrarToast('🗑 Combo eliminado'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar combo'; }
   });
 }
 
@@ -1091,22 +1310,31 @@ function abrirFormFrutoSeco(existente, volverA){
     const nombre = esEdicion ? existente.nombre : document.getElementById('fm-nombre').value.trim();
     const kg = parseFloat(document.getElementById('fm-kg').value);
     const costo_kg = parseFloat(document.getElementById('fm-costokg').value);
+    const transporte = parseFloat(document.getElementById('fm-transporte').value)||0;
+    const stock_minimo = parseFloat(document.getElementById('fm-stockmin').value)||0;
     if(!nombre){ alert('Escribe el nombre'); return; }
     if(!kg || kg<=0){ alert('Ingresa un peso válido'); return; }
     if(!costo_kg || costo_kg<=0){ alert('Ingresa un costo por kg válido'); return; }
+    if(transporte<0){ alert('El transporte no puede ser un número negativo'); return; }
+    if(stock_minimo<0){ alert('El stock mínimo no puede ser un número negativo'); return; }
+    if(esEdicion){
+      const proyectado = proyectarDisponibleTrasCambioCompra(existente.nombre, Number(existente.kg)||0, kg);
+      if(proyectado < -0.001){
+        if(!confirm('⚠️ Ya usaste (en mermas o combos) más '+existente.nombre+' del que quedaría disponible si guardas este cambio (faltarían '+fmtNum(Math.abs(proyectado))+' kg). El costo por gramo de este fruto puede quedar mal calculado. ¿Guardar de todas formas?')) return;
+      }
+    }
     this.disabled=true; this.textContent='Guardando...';
     const payload = {
-      nombre, kg, costo_kg,
-      transporte: parseFloat(document.getElementById('fm-transporte').value)||0,
+      nombre, kg, costo_kg, transporte,
       fecha: document.getElementById('fm-fecha').value || today(),
       vencimiento: document.getElementById('fm-venc').value || '',
-      stock_minimo: parseFloat(document.getElementById('fm-stockmin').value)||0
+      stock_minimo
     };
     try{
       if(esEdicion){
         await DB.actualizar('frutosSecos', Object.assign({id:existente.id}, payload));
         closeDrawer();
-        if(volverA) abrirHistorialCompras(volverA); else renderMezclas();
+        volverDespuesDeGuardarFruto(volverA);
         setTimeout(()=>mostrarToast('✅ Compra actualizada'),100);
       } else {
         await DB.crear('frutosSecos', payload);
@@ -1116,12 +1344,17 @@ function abrirFormFrutoSeco(existente, volverA){
   });
   const btnDel = document.getElementById('btn-eliminar-fruto');
   if(btnDel) btnDel.addEventListener('click', async function(){
-    if(!confirm('¿Eliminar esta compra? Se descontará del inventario disponible. No se puede deshacer.')) return;
+    const proyectado = proyectarDisponibleTrasCambioCompra(existente.nombre, Number(existente.kg)||0, 0);
+    let mensaje = '¿Eliminar esta compra? Se descontará del inventario disponible. No se puede deshacer.';
+    if(proyectado < -0.001){
+      mensaje = '⚠️ Ya usaste (en mermas o combos) más '+existente.nombre+' del que quedaría disponible si eliminas esta compra (faltarían '+fmtNum(Math.abs(proyectado))+' kg). El costo por gramo de este fruto puede quedar mal calculado. ¿Eliminar de todas formas?';
+    }
+    if(!confirm(mensaje)) return;
     this.disabled=true; this.textContent='Eliminando...';
     try{
       await DB.eliminar('frutosSecos', existente.id);
       closeDrawer();
-      if(volverA) abrirHistorialCompras(volverA); else renderMezclas();
+      volverDespuesDeGuardarFruto(volverA);
       setTimeout(()=>mostrarToast('🗑 Compra eliminada'),100);
     } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar esta compra'; }
   });
@@ -1139,7 +1372,7 @@ function abrirConfirmarOtraCompra(volverA){
   });
   document.getElementById('btn-terminar-compra').addEventListener('click', function(){
     closeDrawer();
-    if(volverA) abrirHistorialCompras(volverA); else renderMezclas();
+    volverDespuesDeGuardarFruto(volverA);
     setTimeout(()=>mostrarToast('✅ Listo'),100);
   });
 }
@@ -1172,57 +1405,213 @@ function abrirHistorialCompras(nombre){
   });
 }
 
-function abrirFormPresentacion(){
+function volverDespuesDeGuardarFruto(volverA){
+  if(volverA === '__inventario__') renderInventario();
+  else if(volverA) abrirHistorialCompras(volverA);
+  else renderMezclas();
+}
+
+// ═══════════════════════════════════════
+// PANTALLA: INVENTARIO DE MATERIA PRIMA
+// ═══════════════════════════════════════
+function renderInventario(){
+  const frutos = listaFrutosResumen();
+  const todasCompras = DB.frutosSecos().slice().sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  document.getElementById('screen').innerHTML = `
+    <div class="header">
+      <button class="btn-icon" id="btn-back-inv">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="header-titulo" style="text-align:right"><h1 style="font-size:18px">Inventario de materia prima</h1></div>
+    </div>
+    <div class="section">
+      <div id="cards-inventario"></div>
+    </div>
+    <div class="section">
+      <div class="section-title">Registro de compras</div>
+      <div id="lista-compras-todas"></div>
+    </div>
+  `;
+  document.getElementById('btn-back-inv').addEventListener('click', renderScreen);
+  renderCardsInventario(frutos);
+  renderListaComprasTodas(todasCompras);
+}
+
+function renderCardsInventario(frutos){
+  const cont = document.getElementById('cards-inventario');
+  if(!cont) return;
+  if(frutos.length===0){ cont.innerHTML = '<div class="vacio">Aún no registras frutos secos</div>'; return; }
+  cont.innerHTML = frutos.map(f=>{
+    const invertido = inversionPorFruto(f.nombre);
+    const flete = transporteTotalCompras(f.nombre);
+    return `
+    <div class="card" style="margin-bottom:10px;${f.alerta?'border-color:rgba(224,92,92,.4)':''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="font-size:16px;font-weight:500">${f.nombre}</div>
+        ${f.alerta?'<span class="badge vencido">stock bajo</span>':''}
+      </div>
+      <div style="margin:8px 0 6px">
+        <div style="font-size:12px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em">Disponible ahora</div>
+        <div style="font-family:'DM Serif Display',serif;font-size:28px;color:var(--gold2)">${fmtNum(f.disponible)} kg</div>
+      </div>
+      <div style="font-size:12.5px;color:var(--txt2);line-height:1.6">
+        Costo/kg: <b style="color:var(--txt)">${fmt(f.costoKg)}</b> (incluye flete)<br>
+        Invertido total: <b style="color:var(--txt)">${fmt(invertido)}</b> · Flete anexado: <b style="color:var(--txt)">${fmt(flete)}</b>
+        ${f.proximoVencimiento ? '<br>Vence: '+fmtDateCorta(f.proximoVencimiento) : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderListaComprasTodas(compras){
+  const cont = document.getElementById('lista-compras-todas');
+  if(!cont) return;
+  if(compras.length===0){ cont.innerHTML = '<div class="vacio">Aún no registras compras</div>'; return; }
+  cont.innerHTML = compras.map(l=>`
+    <div class="item-row">
+      <div class="info">
+        <p class="nom">${l.nombre} — ${fmtNum(l.kg)} kg</p>
+        <p class="sub">${fmtDateCorta(l.fecha)} · ${fmt(l.costo_kg)}/kg${l.transporte?(' · flete '+fmt(l.transporte)):''}</p>
+      </div>
+      <div class="der">
+        <div class="acciones"><button data-editar-compra="${l.id}" title="Editar">✎</button></div>
+      </div>
+    </div>
+  `).join('');
+  cont.querySelectorAll('[data-editar-compra]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const lote = DB.frutosSecos().find(f=>f.id===this.getAttribute('data-editar-compra'));
+      if(lote) abrirFormFrutoSeco(lote, '__inventario__');
+    });
+  });
+}
+
+function abrirFormPresentacion(existente){
+  const esEdicion = !!existente;
   const lista = DB.presentaciones();
   openDrawer(`
-    <div class="drawer-title">Presentaciones</div>
+    <div class="drawer-title">${esEdicion ? 'Editar presentación' : 'Presentaciones'}</div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="fm-nombre-p" type="text" placeholder="Bolsa 100g"></div>
-      <div class="form-group"><label class="form-label">Gramos</label><input class="form-input" id="fm-gramos-p" type="number" placeholder="100"></div>
+      <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="fm-nombre-p" type="text" placeholder="Bolsa 100g" value="${esEdicion?existente.nombre:''}"></div>
+      <div class="form-group"><label class="form-label">Gramos</label><input class="form-input" id="fm-gramos-p" type="number" placeholder="100" value="${esEdicion?existente.gramos:''}"></div>
     </div>
-    <button class="btn btn-primary btn-full" id="btn-guardar-presentacion" style="margin-bottom:14px">Agregar</button>
+    <button class="btn btn-primary btn-full" id="btn-guardar-presentacion" style="margin-bottom:8px">${esEdicion?'Guardar cambios':'Agregar'}</button>
+    ${esEdicion?'<button class="btn btn-danger btn-full" id="btn-eliminar-presentacion" style="margin-bottom:14px">Eliminar</button>':''}
     <div class="section-title">Ya registradas</div>
-    <div>${lista.map(p=>`<div class="chip">${p.nombre} (${p.gramos}g)</div>`).join('') || '<p style="color:var(--txt2);font-size:13px">Ninguna todavía</p>'}</div>
+    <div id="lista-presentaciones-existentes"></div>
   `);
+  renderListaPresentaciones(lista);
   document.getElementById('btn-guardar-presentacion').addEventListener('click', async function(){
     const nombre = document.getElementById('fm-nombre-p').value.trim();
     const gramos = parseFloat(document.getElementById('fm-gramos-p').value);
     if(!nombre || !gramos || gramos<=0){ alert('Completa nombre y gramos'); return; }
-    this.disabled=true; this.textContent='Agregando...';
+    this.disabled=true; this.textContent=esEdicion?'Guardando...':'Agregando...';
     try{
-      await DB.crear('presentaciones', {nombre, gramos});
+      if(esEdicion){
+        await DB.actualizar('presentaciones', {id:existente.id, nombre, gramos});
+        mostrarToast('✅ Presentación actualizada');
+      } else {
+        await DB.crear('presentaciones', {nombre, gramos});
+        mostrarToast('✅ Presentación agregada');
+      }
       abrirFormPresentacion();
-      mostrarToast('✅ Presentación agregada');
-    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Agregar'; }
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent=esEdicion?'Guardar cambios':'Agregar'; }
+  });
+  const btnDel = document.getElementById('btn-eliminar-presentacion');
+  if(btnDel) btnDel.addEventListener('click', async function(){
+    if(!confirm('¿Eliminar esta presentación?')) return;
+    this.disabled=true; this.textContent='Eliminando...';
+    try{
+      await DB.eliminar('presentaciones', existente.id);
+      mostrarToast('🗑 Presentación eliminada');
+      abrirFormPresentacion();
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar'; }
+  });
+}
+function renderListaPresentaciones(lista){
+  const cont = document.getElementById('lista-presentaciones-existentes');
+  if(!cont) return;
+  if(lista.length===0){ cont.innerHTML = '<p style="color:var(--txt2);font-size:13px">Ninguna todavía</p>'; return; }
+  cont.innerHTML = lista.map(p=>`
+    <div class="item-row">
+      <div class="info"><p class="nom">${p.nombre}</p><p class="sub">${p.gramos}g</p></div>
+      <div class="der"><div class="acciones"><button data-editar-presentacion="${p.id}" title="Editar">✎</button></div></div>
+    </div>
+  `).join('');
+  cont.querySelectorAll('[data-editar-presentacion]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const p = DB.presentaciones().find(x=>x.id===this.getAttribute('data-editar-presentacion'));
+      if(p) abrirFormPresentacion(p);
+    });
   });
 }
 
-function abrirFormMerma(){
+function abrirFormMerma(existente){
+  const esEdicion = !!existente;
   const nombres = nombresFrutosSecos();
+  const listaMermas = DB.merma().slice().sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
   openDrawer(`
-    <div class="drawer-title">Registrar merma</div>
+    <div class="drawer-title">${esEdicion?'Editar merma':'Registrar merma'}</div>
     <div class="form-group">
       <label class="form-label">Fruto seco</label>
-      <select class="form-input" id="fm-fruto-merma">${nombres.map(n=>`<option value="${n}">${n}</option>`).join('')}</select>
+      <select class="form-input" id="fm-fruto-merma">${nombres.map(n=>`<option value="${n}" ${esEdicion&&existente.fruto_nombre===n?'selected':''}>${n}</option>`).join('')}</select>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Kg perdidos</label><input class="form-input" id="fm-kg-merma" type="number" step="0.01"></div>
-      <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" id="fm-fecha-merma" type="date" value="${today()}"></div>
+      <div class="form-group"><label class="form-label">Kg perdidos</label><input class="form-input" id="fm-kg-merma" type="number" step="0.01" value="${esEdicion?existente.kg:''}"></div>
+      <div class="form-group"><label class="form-label">Fecha</label><input class="form-input" id="fm-fecha-merma" type="date" value="${esEdicion?existente.fecha:today()}"></div>
     </div>
-    <div class="form-group"><label class="form-label">Motivo</label><input class="form-input" id="fm-motivo-merma" type="text" placeholder="Ej: humedad, daño"></div>
-    <button class="btn btn-primary btn-full" id="btn-guardar-merma">Guardar</button>
+    <div class="form-group"><label class="form-label">Motivo</label><input class="form-input" id="fm-motivo-merma" type="text" placeholder="Ej: humedad, daño" value="${esEdicion?(existente.motivo||''):''}"></div>
+    <button class="btn btn-primary btn-full" id="btn-guardar-merma" style="margin-bottom:${esEdicion?'8px':'14px'}">${esEdicion?'Guardar cambios':'Guardar'}</button>
+    ${esEdicion?'<button class="btn btn-danger btn-full" id="btn-eliminar-merma" style="margin-bottom:14px">Eliminar</button>':''}
+    <div class="section-title">Registros de merma</div>
+    <div id="lista-mermas-existentes"></div>
   `);
+  renderListaMermas(listaMermas);
   document.getElementById('btn-guardar-merma').addEventListener('click', async function(){
     const fruto_nombre = document.getElementById('fm-fruto-merma').value;
     const kg = parseFloat(document.getElementById('fm-kg-merma').value);
     if(!fruto_nombre){ alert('Registra primero un fruto seco'); return; }
     if(!kg || kg<=0){ alert('Ingresa un peso válido'); return; }
     this.disabled=true; this.textContent='Guardando...';
+    const payload = {fruto_nombre, kg, motivo:document.getElementById('fm-motivo-merma').value.trim(), fecha:document.getElementById('fm-fecha-merma').value||today()};
     try{
-      await DB.crear('merma', {fruto_nombre, kg, motivo:document.getElementById('fm-motivo-merma').value.trim(), fecha:document.getElementById('fm-fecha-merma').value||today()});
+      if(esEdicion){
+        await DB.actualizar('merma', Object.assign({id:existente.id}, payload));
+        closeDrawer(); renderMezclas();
+        setTimeout(()=>mostrarToast('✅ Merma actualizada'),100);
+      } else {
+        await DB.crear('merma', payload);
+        closeDrawer(); renderMezclas();
+        setTimeout(()=>mostrarToast('✅ Merma registrada'),100);
+      }
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent=esEdicion?'Guardar cambios':'Guardar'; }
+  });
+  const btnDel = document.getElementById('btn-eliminar-merma');
+  if(btnDel) btnDel.addEventListener('click', async function(){
+    if(!confirm('¿Eliminar este registro de merma? El kg se devolverá al inventario disponible.')) return;
+    this.disabled=true; this.textContent='Eliminando...';
+    try{
+      await DB.eliminar('merma', existente.id);
       closeDrawer(); renderMezclas();
-      setTimeout(()=>mostrarToast('✅ Merma registrada'),100);
-    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar'; }
+      setTimeout(()=>mostrarToast('🗑 Merma eliminada'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Eliminar'; }
+  });
+}
+function renderListaMermas(lista){
+  const cont = document.getElementById('lista-mermas-existentes');
+  if(!cont) return;
+  if(lista.length===0){ cont.innerHTML = '<div class="vacio">Sin registros de merma</div>'; return; }
+  cont.innerHTML = lista.map(m=>`
+    <div class="item-row">
+      <div class="info"><p class="nom">${m.fruto_nombre} — ${fmtNum(m.kg)} kg</p><p class="sub">${fmtDateCorta(m.fecha)}${m.motivo?(' · '+m.motivo):''}</p></div>
+      <div class="der"><div class="acciones"><button data-editar-merma="${m.id}" title="Editar">✎</button></div></div>
+    </div>
+  `).join('');
+  cont.querySelectorAll('[data-editar-merma]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const m = DB.merma().find(x=>x.id===this.getAttribute('data-editar-merma'));
+      if(m) abrirFormMerma(m);
+    });
   });
 }
 
@@ -1265,17 +1654,37 @@ function abrirConfirmarProduccion(s){
     </div>
     <div class="form-group"><label class="form-label">Transporte de esta producción (opcional)</label><input class="form-input" id="fm-transporte-combo" type="number" value="0"></div>
     <div class="form-group"><label class="form-label">Precio de venta</label><input class="form-input" id="fm-precio-combo" type="number" value="${s.precio}"></div>
+    <div class="card" id="resultado-produccion" style="margin-bottom:14px"></div>
     <button class="btn btn-primary btn-full" id="btn-confirmar-produccion">Confirmar producción</button>
   `);
-  document.getElementById('fm-bolsas').addEventListener('input', function(){
-    const b = parseFloat(this.value)||0;
-    document.getElementById('preview-total-mezcla').textContent = 'Total a mezclar para '+b+' bolsas: '+s.ingredientes.map(i=>i.nombre+' '+fmtNum(i.gramos*b)+'g').join(' · ');
+  function recalcularProduccionPreview(){
+    const bolsas = parseFloat(document.getElementById('fm-bolsas').value)||0;
+    document.getElementById('preview-total-mezcla').textContent = 'Total a mezclar para '+bolsas+' bolsas: '+s.ingredientes.map(i=>i.nombre+' '+fmtNum(i.gramos*bolsas)+'g').join(' · ');
+    const costoEmpaque = parseFloat(document.getElementById('fm-empaque').value)||0;
+    const transporte = parseFloat(document.getElementById('fm-transporte-combo').value)||0;
+    const precio = parseFloat(document.getElementById('fm-precio-combo').value)||0;
+    const cont = document.getElementById('resultado-produccion');
+    if(bolsas<=0){ cont.innerHTML = '<p style="font-size:13px;color:var(--txt2)">Indica cuántas bolsas vas a producir.</p>'; return; }
+    const ingredientesTotales = s.ingredientes.map(i=>({nombre:i.nombre, gramos: Math.round(i.gramos*bolsas)}));
+    const costo = calcularCostoCombo({ingredientes: ingredientesTotales, bolsas, costo_empaque_unit:costoEmpaque, costo_transporte:transporte});
+    const margenReal = costo.costoBolsa>0 ? ((precio-costo.costoBolsa)/costo.costoBolsa*100) : 0;
+    cont.innerHTML = `
+      <p style="font-size:13px;color:var(--txt2)">Costo neto por bolsa: <b style="color:var(--txt)">${fmt(costo.costoBolsa)}</b></p>
+      <p style="font-size:13px;color:var(--txt2);margin-top:6px">Con precio de ${fmt(precio)}: <b style="color:${margenReal>=0?'var(--green)':'var(--red)'}">${fmt(precio-costo.costoBolsa)} por bolsa (margen ${margenReal.toFixed(1)}%)</b></p>
+    `;
+  }
+  ['fm-bolsas','fm-empaque','fm-transporte-combo','fm-precio-combo'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', recalcularProduccionPreview);
   });
+  recalcularProduccionPreview();
   document.getElementById('btn-confirmar-produccion').addEventListener('click', async function(){
     const bolsas = parseFloat(document.getElementById('fm-bolsas').value)||0;
     if(bolsas<=0){ alert('Ingresa una cantidad de bolsas válida'); return; }
     const costo_empaque_unit = parseFloat(document.getElementById('fm-empaque').value)||0;
     const costo_transporte = parseFloat(document.getElementById('fm-transporte-combo').value)||0;
+    const precioVenta = parseFloat(document.getElementById('fm-precio-combo').value)||0;
+    if(costo_empaque_unit<0 || costo_transporte<0){ alert('El empaque y el transporte no pueden ser negativos'); return; }
+    if(precioVenta<=0){ alert('Ingresa un precio de venta válido (mayor a 0)'); return; }
     const ingredientes = s.ingredientes.map(i=>({nombre:i.nombre, gramos: Math.round(i.gramos*bolsas)}));
     const costo = calcularCostoCombo({ingredientes, bolsas, costo_empaque_unit, costo_transporte});
     this.disabled=true; this.textContent='Guardando...';
@@ -1303,25 +1712,21 @@ function abrirComboManual(){
 }
 function renderComboManualDrawer(){
   const nombres = nombresFrutosSecos();
-  const presentaciones = DB.presentaciones();
   const cfg = DB.config();
   openDrawer(`
     <div class="drawer-title">Armar combo manual</div>
     <div class="form-group"><label class="form-label">Nombre del combo</label><input class="form-input" id="fm-nombre-manual" placeholder="Ej: Mix Premium"></div>
-    <div class="section-title">Ingredientes (gramos totales a usar)</div>
+    <div class="section-title">Ingredientes (gramos por cada bolsa)</div>
     <div id="filas-ingredientes"></div>
     <button class="btn btn-secondary btn-sm" id="btn-add-ingrediente" style="margin-bottom:14px">+ Agregar ingrediente</button>
-    <div class="form-group">
-      <label class="form-label">Presentación</label>
-      <select class="form-input" id="fm-presentacion-manual">${presentaciones.map(p=>`<option value="${p.gramos}">${p.nombre} (${p.gramos}g)</option>`).join('') || '<option value="">Registra una presentación primero</option>'}</select>
-    </div>
     <div class="form-row">
+      <div class="form-group"><label class="form-label">Bolsas a producir</label><input class="form-input" id="fm-bolsas-manual" type="number" placeholder="Ej: 20"></div>
       <div class="form-group"><label class="form-label">Costo empaque/bolsa</label><input class="form-input" id="fm-empaque-manual" type="number" value="${cfg.costo_empaque_default||0}"></div>
-      <div class="form-group"><label class="form-label">Transporte (opcional)</label><input class="form-input" id="fm-transporte-manual" type="number" value="0"></div>
     </div>
-    <div class="form-group"><label class="form-label">Margen deseado (%)</label><input class="form-input" id="fm-margen-manual" type="number" value="${cfg.margen_objetivo_default||50}"></div>
+    <div class="form-group"><label class="form-label">Transporte de esta producción (opcional)</label><input class="form-input" id="fm-transporte-manual" type="number" value="0"></div>
+    <div class="form-group"><label class="form-label">Precio de venta deseado</label><input class="form-input" id="fm-precio-manual" type="number" placeholder="Ej: 3000"></div>
     <div class="card" id="resultado-manual" style="margin-bottom:14px"></div>
-    <button class="btn btn-secondary btn-full" id="btn-calcular-manual" style="margin-bottom:8px">Calcular costo y precio</button>
+    <button class="btn btn-secondary btn-full" id="btn-calcular-manual" style="margin-bottom:8px">Calcular costo y margen</button>
     <button class="btn btn-primary btn-full" id="btn-guardar-manual">Producir combo</button>
   `);
   renderFilasIngredientes(nombres);
@@ -1340,7 +1745,7 @@ function renderFilasIngredientes(nombres){
         <option value="">Selecciona...</option>
         ${nombres.map(n=>`<option value="${n}" ${ing.nombre===n?'selected':''}>${n}</option>`).join('')}
       </select>
-      <input class="form-input" type="number" placeholder="gramos" data-idx="${idx}" data-campo="gramos" value="${ing.gramos}">
+      <input class="form-input" type="number" placeholder="gramos/bolsa" data-idx="${idx}" data-campo="gramos" value="${ing.gramos}">
     </div>
   `).join('');
   cont.querySelectorAll('[data-campo]').forEach(el=>{
@@ -1355,48 +1760,66 @@ function leerIngredientesManual(){
   return _ingredientesManual.filter(i=>i.nombre && parseFloat(i.gramos)>0).map(i=>({nombre:i.nombre, gramos:parseFloat(i.gramos)}));
 }
 function calcularManualPreview(){
-  const ingredientes = leerIngredientesManual();
-  const gramosPres = parseFloat(document.getElementById('fm-presentacion-manual').value)||0;
+  const porBolsa = leerIngredientesManual(); // gramos por CADA bolsa
+  const bolsas = parseFloat(document.getElementById('fm-bolsas-manual').value)||0;
   const costoEmpaque = parseFloat(document.getElementById('fm-empaque-manual').value)||0;
   const transporte = parseFloat(document.getElementById('fm-transporte-manual').value)||0;
-  const margen = parseFloat(document.getElementById('fm-margen-manual').value)||0;
-  const totalGramos = ingredientes.reduce((s,i)=>s+i.gramos,0);
+  const precioDeseado = parseFloat(document.getElementById('fm-precio-manual').value)||0;
   const cont = document.getElementById('resultado-manual');
-  if(ingredientes.length===0 || gramosPres<=0){
-    cont.innerHTML = '<p style="font-size:13px;color:var(--txt2)">Completa ingredientes y presentación para calcular.</p>';
+  if(porBolsa.length===0){
+    cont.innerHTML = '<p style="font-size:13px;color:var(--txt2)">Agrega al menos un ingrediente con sus gramos por bolsa.</p>';
     return null;
   }
-  const bolsas = Math.floor(totalGramos/gramosPres);
-  const sobrante = totalGramos - bolsas*gramosPres;
   if(bolsas<=0){
-    cont.innerHTML = '<p style="font-size:13px;color:var(--red)">La cantidad no alcanza para una bolsa completa de esa presentación.</p>';
+    cont.innerHTML = '<p style="font-size:13px;color:var(--txt2)">Indica cuántas bolsas vas a producir.</p>';
     return null;
   }
-  const costo = calcularCostoCombo({ingredientes, bolsas, costo_empaque_unit:costoEmpaque, costo_transporte:transporte});
-  const precio = precioSugerido(costo.costoBolsa, margen);
-  const porBolsa = ingredientes.map(i=>i.nombre+': '+fmtNum(i.gramos/bolsas)+'g').join(' · ');
+  const gramosBolsa = porBolsa.reduce((s,i)=>s+i.gramos,0);
+  const ingredientesTotales = porBolsa.map(i=>({nombre:i.nombre, gramos: Math.round(i.gramos*bolsas)}));
+
+  const frutos = listaFrutosResumen();
+  const faltantes = [];
+  ingredientesTotales.forEach(ing=>{
+    const f = frutos.find(x=>x.nombre===ing.nombre);
+    const disponibleGr = (f ? f.disponible : 0)*1000;
+    if(ing.gramos > disponibleGr + 0.5) faltantes.push(ing.nombre+' (necesitas '+fmtNum(ing.gramos)+'g, tienes '+fmtNum(disponibleGr)+'g)');
+  });
+
+  const costo = calcularCostoCombo({ingredientes: ingredientesTotales, bolsas, costo_empaque_unit:costoEmpaque, costo_transporte:transporte});
+  const margenDefault = DB.config().margen_objetivo_default || 50;
+  const precio = precioDeseado>0 ? precioDeseado : precioSugerido(costo.costoBolsa, margenDefault);
+  const margenReal = costo.costoBolsa>0 ? ((precio-costo.costoBolsa)/costo.costoBolsa*100) : 0;
+
   cont.innerHTML = `
-    <p style="font-size:13px;color:var(--txt2)">Bolsas resultantes: <b style="color:var(--txt)">${bolsas}</b> (sobrante: ${fmtNum(sobrante)}g)</p>
-    <p style="font-size:13px;color:var(--txt2);margin-top:6px">Gramos por cada bolsa (para pesar): <b style="color:var(--txt)">${porBolsa}</b></p>
+    <p style="font-size:13px;color:var(--txt2)">Gramos por bolsa: <b style="color:var(--txt)">${porBolsa.map(i=>i.nombre+': '+fmtNum(i.gramos)+'g').join(' · ')}</b> (total ${fmtNum(gramosBolsa)}g/bolsa)</p>
+    <p style="font-size:13px;color:var(--txt2);margin-top:6px">Total a mezclar para ${bolsas} bolsas: <b style="color:var(--txt)">${ingredientesTotales.map(i=>i.nombre+' '+fmtNum(i.gramos)+'g').join(' · ')}</b></p>
     <p style="font-size:13px;color:var(--txt2);margin-top:6px">Costo neto por bolsa (sin utilidad): <b style="color:var(--txt)">${fmt(costo.costoBolsa)}</b></p>
-    <p style="font-size:13px;color:var(--txt2)">Precio de venta sugerido: <b style="color:var(--gold2)">${fmt(precio)}</b></p>
+    ${precioDeseado>0
+      ? `<p style="font-size:13px;color:var(--txt2);margin-top:6px">Con tu precio de ${fmt(precioDeseado)}, la ganancia es <b style="color:${margenReal>=0?'var(--green)':'var(--red)'}">${fmt(precio-costo.costoBolsa)} por bolsa (margen ${margenReal.toFixed(1)}%)</b></p>`
+      : `<p style="font-size:13px;color:var(--txt2);margin-top:6px">Precio sugerido con margen de ${margenDefault}%: <b style="color:var(--gold2)">${fmt(precio)}</b></p>`}
+    ${faltantes.length ? `<p style="font-size:13px;color:var(--red);margin-top:8px">⚠️ No tienes suficiente stock de: ${faltantes.join('; ')}</p>` : ''}
   `;
-  return {ingredientes, bolsas, sobrante, costoEmpaque, transporte, precio, costo};
+  return {ingredientesTotales, bolsas, gramosBolsa, costoEmpaque, transporte, precio, margenReal, costo, faltantes, presentacionGramos: Math.round(gramosBolsa)};
 }
 async function guardarComboManual(){
   const r = calcularManualPreview();
   if(!r){ mostrarToast('⚠️ Revisa los datos antes de guardar'); return; }
+  if(r.costoEmpaque<0 || r.transporte<0){ mostrarToast('❌ El empaque y el transporte no pueden ser negativos'); return; }
+  if(r.precio<=0){ mostrarToast('❌ Ingresa un precio de venta válido (mayor a 0)'); return; }
+  if(r.faltantes && r.faltantes.length){
+    if(!confirm('No tienes suficiente stock de: '+r.faltantes.join('; ')+'. ¿Producir de todas formas?')) return;
+  }
   const btn = document.getElementById('btn-guardar-manual');
   btn.disabled = true; btn.textContent = 'Guardando...';
   try{
     await DB.crear('combos', {
       nombre: document.getElementById('fm-nombre-manual').value.trim() || 'Combo manual',
-      ingredientes: r.ingredientes,
-      presentacion_gramos: parseFloat(document.getElementById('fm-presentacion-manual').value)||0,
+      ingredientes: r.ingredientesTotales,
+      presentacion_gramos: r.presentacionGramos,
       bolsas: r.bolsas,
       costo_empaque_unit: r.costoEmpaque, costo_transporte: r.transporte,
       costo_materia: r.costo.costoMateria, costo_total: r.costo.costoTotal, costo_bolsa: r.costo.costoBolsa,
-      margen_pct: parseFloat(document.getElementById('fm-margen-manual').value)||0,
+      margen_pct: Math.round(r.margenReal),
       precio_sugerido: r.precio, precio_venta: r.precio,
       tipo:'manual', fecha: today()
     });
@@ -1758,7 +2181,3 @@ document.addEventListener('visibilitychange', function(){
   renderScreen();
   setTimeout(()=>mostrarToast('✅ Datos actualizados'), 300);
 })();
-
-</script>
-</body>
-</html>
