@@ -204,6 +204,8 @@ const fmtNum=n=>new Intl.NumberFormat('es-CO',{maximumFractionDigits:2}).format(
 const fmtDate=d=>d?new Date(String(d).slice(0,10)+'T12:00:00').toLocaleDateString('es-CO',{day:'2-digit',month:'short',year:'numeric'}):'—';
 const fmtDateCorta=d=>{ if(!d) return '—'; const dt=new Date(String(d).slice(0,10)+'T12:00:00'); const dd=String(dt.getDate()).padStart(2,'0'); const mm=String(dt.getMonth()+1).padStart(2,'0'); const yy=String(dt.getFullYear()).slice(2); return dd+'/'+mm+'/'+yy; };
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Bogota',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+// Muestra una cantidad en kg como gramos si es menor a 1 kg, o en kilos si es 1 kg o más.
+const fmtKg=kg=>{ const n = Number(kg)||0; return Math.abs(n) < 1 ? (fmtNum(n*1000)+' g') : (fmtNum(n)+' kg'); };
 
 function mostrarToast(msg){
   const t = document.getElementById('toast');
@@ -605,12 +607,13 @@ function renderNegocio(){
 
     ${alertasStock.length ? `
     <div class="section">
-      <div class="alerta-baja">⚠️ Stock bajo: ${alertasStock.map(a=>a.nombre+' ('+fmtNum(a.disponible)+' kg)').join(', ')}</div>
+      <div class="alerta-baja">⚠️ Stock bajo: ${alertasStock.map(a=>a.nombre+' ('+fmtKg(a.disponible)+')').join(', ')}</div>
     </div>` : ''}
 
     <div class="section">
       <div class="grid-acciones">
         <div class="btn-accion" id="btn-retirar"><div class="ico a">$</div><span class="lbl">Retirar ganancia</span></div>
+        <div class="btn-accion" id="btn-reinvertir"><div class="ico a">🔄</div><span class="lbl">Reinvertir ganancia</span></div>
         <div class="btn-accion" id="btn-gasto"><div class="ico b">−</div><span class="lbl">Registrar gasto</span></div>
         <div class="btn-accion" id="btn-inyectar"><div class="ico c">+</div><span class="lbl">Inyectar capital</span></div>
         <div class="btn-accion" id="btn-clientes"><div class="ico c">☰</div><span class="lbl">Ver cartera</span></div>
@@ -634,6 +637,7 @@ function renderNegocio(){
 
   document.getElementById('btn-editar-base').addEventListener('click', abrirFormBaseCapital);
   document.getElementById('btn-retirar').addEventListener('click', ()=>abrirFormMovimiento('retiro'));
+  document.getElementById('btn-reinvertir').addEventListener('click', abrirFormReinversion);
   document.getElementById('btn-gasto').addEventListener('click', ()=>abrirFormMovimiento('gasto'));
   document.getElementById('btn-inyectar').addEventListener('click', ()=>abrirFormMovimiento('inyeccion'));
   document.getElementById('btn-clientes').addEventListener('click', ()=>{
@@ -687,7 +691,7 @@ function abrirFormBaseCapital(){
   });
 }
 
-const TIPO_MOV_LABEL = {retiro:'Retiro de ganancia', gasto:'Gasto operativo', inyeccion:'Inyección de capital extra'};
+const TIPO_MOV_LABEL = {retiro:'Retiro de ganancia', gasto:'Gasto operativo', inyeccion:'Inyección de capital extra', reinversion:'Reinversión de ganancia'};
 function abrirFormMovimiento(tipo){
   const caja = calcCaja();
   const sugerido = tipo==='retiro' ? caja.gananciaDisponibleRetiro : '';
@@ -723,6 +727,42 @@ function abrirFormMovimiento(tipo){
   });
 }
 
+function abrirFormReinversion(){
+  const caja = calcCaja();
+  openDrawer(`
+    <div class="drawer-title">Reinvertir ganancia</div>
+    <p style="font-size:13px;color:var(--txt2);margin-bottom:12px">En vez de sacar el dinero de la caja, lo sumas a la base de capital para la próxima compra. Disponible para reinvertir: ${fmt(caja.gananciaDisponibleRetiro)}</p>
+    <div class="form-group">
+      <label class="form-label">Fecha</label>
+      <input class="form-input" id="fm-fecha-reinv" type="date" value="${today()}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Descripción (opcional)</label>
+      <input class="form-input" id="fm-motivo-reinv" type="text" placeholder="Ej: Reinversión mensual">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Monto</label>
+      <input class="form-input" id="fm-monto-reinv" type="number" placeholder="50000" value="${caja.gananciaDisponibleRetiro||''}">
+    </div>
+    <button class="btn btn-primary btn-full" id="btn-guardar-reinv">Reinvertir</button>
+  `);
+  document.getElementById('btn-guardar-reinv').addEventListener('click', async function(){
+    const fecha = document.getElementById('fm-fecha-reinv').value;
+    const motivo = document.getElementById('fm-motivo-reinv').value.trim();
+    const monto = parseFloat(document.getElementById('fm-monto-reinv').value);
+    if(!fecha){ alert('Selecciona una fecha'); return; }
+    if(!monto || monto<=0){ alert('Ingresa un monto válido'); return; }
+    this.disabled=true; this.textContent='Guardando...';
+    try{
+      await DB.crear('movimientos', {tipo:'reinversion', motivo, monto, fecha});
+      const nuevaBase = (Number(DB.config().capital_reinversion)||0) + monto;
+      await DB.setConfig('capital_reinversion', nuevaBase);
+      closeDrawer(); renderNegocio();
+      setTimeout(()=>mostrarToast('✅ Ganancia reinvertida'),100);
+    } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Reinvertir'; }
+  });
+}
+
 function abrirHistorialMovimientos(){
   const movs = DB.movimientos().slice().sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
   openDrawer(`
@@ -734,7 +774,7 @@ function abrirHistorialMovimientos(){
           <p class="sub">${fmtDateCorta(m.fecha)}${m.motivo?(' · '+m.motivo):''}</p>
         </div>
         <div class="der">
-          <div class="monto ${m.tipo==='inyeccion'?'entrada':'salida'}">${fmt(m.monto)}</div>
+          <div class="monto ${(m.tipo==='inyeccion'||m.tipo==='reinversion')?'entrada':'salida'}">${fmt(m.monto)}</div>
           <div class="acciones"><button data-editar-mov="${m.id}" title="Editar">✎</button></div>
         </div>
       </div>
@@ -772,16 +812,26 @@ function abrirEditarMovimiento(mov){
     this.disabled=true; this.textContent='Guardando...';
     try{
       await DB.actualizar('movimientos', {id:mov.id, fecha:document.getElementById('fm-fecha-mov-edit').value||mov.fecha, motivo:document.getElementById('fm-motivo-mov-edit').value.trim(), monto});
+      if(mov.tipo==='reinversion'){
+        const diferencia = monto - (Number(mov.monto)||0);
+        const nuevaBase = Math.max(0, (Number(DB.config().capital_reinversion)||0) + diferencia);
+        await DB.setConfig('capital_reinversion', nuevaBase);
+      }
       closeDrawer();
       abrirHistorialMovimientos();
       setTimeout(()=>mostrarToast('✅ Movimiento actualizado'),100);
     } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar cambios'; }
   });
   document.getElementById('btn-eliminar-mov-edit').addEventListener('click', async function(){
-    if(!confirm('¿Eliminar este movimiento?')) return;
+    const advertencia = mov.tipo==='reinversion' ? '¿Eliminar este movimiento? La base de capital se reducirá en '+fmt(mov.monto)+' para deshacer la reinversión.' : '¿Eliminar este movimiento?';
+    if(!confirm(advertencia)) return;
     this.disabled=true; this.textContent='Eliminando...';
     try{
       await DB.eliminar('movimientos', mov.id);
+      if(mov.tipo==='reinversion'){
+        const nuevaBase = Math.max(0, (Number(DB.config().capital_reinversion)||0) - (Number(mov.monto)||0));
+        await DB.setConfig('capital_reinversion', nuevaBase);
+      }
       closeDrawer();
       abrirHistorialMovimientos();
       setTimeout(()=>mostrarToast('🗑 Movimiento eliminado'),100);
@@ -1213,7 +1263,7 @@ function renderListaFrutos(frutos){
     <div class="item-row" data-fruto="${f.nombre}" style="cursor:pointer">
       <div class="info">
         <p class="nom">${f.nombre} ${f.alerta?'<span class="badge vencido">stock bajo</span>':''}</p>
-        <p class="sub">Disponible: ${fmtNum(f.disponible)} kg · ${fmt(f.costoKg)}/kg${f.proximoVencimiento?(' · vence '+fmtDateCorta(f.proximoVencimiento)):''}</p>
+        <p class="sub">Disponible: ${fmtKg(f.disponible)} · ${fmt(f.costoKg)}/kg${f.proximoVencimiento?(' · vence '+fmtDateCorta(f.proximoVencimiento)):''}</p>
       </div>
       <div class="der">
         <div class="monto">${fmt(f.disponible*f.costoKg)}</div>
@@ -1467,7 +1517,7 @@ function abrirFormFrutoSeco(existente, volverA){
     if(esEdicion){
       const proyectado = proyectarDisponibleTrasCambioCompra(existente.nombre, Number(existente.kg)||0, kg);
       if(proyectado < -0.001){
-        if(!confirm('⚠️ Ya usaste (en mermas o combos) más '+existente.nombre+' del que quedaría disponible si guardas este cambio (faltarían '+fmtNum(Math.abs(proyectado))+' kg). El costo por gramo de este fruto puede quedar mal calculado. ¿Guardar de todas formas?')) return;
+        if(!confirm('⚠️ Ya usaste (en mermas o combos) más '+existente.nombre+' del que quedaría disponible si guardas este cambio (faltarían '+fmtKg(Math.abs(proyectado))+'). El costo por gramo de este fruto puede quedar mal calculado. ¿Guardar de todas formas?')) return;
       }
     }
     this.disabled=true; this.textContent='Guardando...';
@@ -1494,7 +1544,7 @@ function abrirFormFrutoSeco(existente, volverA){
     const proyectado = proyectarDisponibleTrasCambioCompra(existente.nombre, Number(existente.kg)||0, 0);
     let mensaje = '¿Eliminar esta compra? Se descontará del inventario disponible. No se puede deshacer.';
     if(proyectado < -0.001){
-      mensaje = '⚠️ Ya usaste (en mermas o combos) más '+existente.nombre+' del que quedaría disponible si eliminas esta compra (faltarían '+fmtNum(Math.abs(proyectado))+' kg). El costo por gramo de este fruto puede quedar mal calculado. ¿Eliminar de todas formas?';
+      mensaje = '⚠️ Ya usaste (en mermas o combos) más '+existente.nombre+' del que quedaría disponible si eliminas esta compra (faltarían '+fmtKg(Math.abs(proyectado))+'). El costo por gramo de este fruto puede quedar mal calculado. ¿Eliminar de todas formas?';
     }
     if(!confirm(mensaje)) return;
     this.disabled=true; this.textContent='Eliminando...';
@@ -1531,7 +1581,7 @@ function abrirHistorialCompras(nombre){
     <div>${lotes.map(l=>`
       <div class="item-row">
         <div class="info">
-          <p class="nom">${fmtNum(l.kg)} kg a ${fmt(l.costo_kg)}/kg</p>
+          <p class="nom">${fmtKg(l.kg)} a ${fmt(l.costo_kg)}/kg</p>
           <p class="sub">${fmtDateCorta(l.fecha)}${l.transporte?(' · transporte '+fmt(l.transporte)):''}</p>
         </div>
         <div class="der">
@@ -1599,7 +1649,7 @@ function renderCardsInventario(frutos){
       </div>
       <div style="margin:8px 0 6px">
         <div style="font-size:12px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em">Disponible ahora</div>
-        <div style="font-family:'DM Serif Display',serif;font-size:28px;color:var(--gold2)">${fmtNum(f.disponible)} kg</div>
+        <div style="font-family:'DM Serif Display',serif;font-size:28px;color:var(--gold2)">${fmtKg(f.disponible)}</div>
       </div>
       <div style="font-size:12.5px;color:var(--txt2);line-height:1.6">
         Costo/kg: <b style="color:var(--txt)">${fmt(f.costoKg)}</b> (incluye flete)<br>
@@ -1617,7 +1667,7 @@ function renderListaComprasTodas(compras){
   cont.innerHTML = compras.map(l=>`
     <div class="item-row">
       <div class="info">
-        <p class="nom">${l.nombre} — ${fmtNum(l.kg)} kg</p>
+        <p class="nom">${l.nombre} — ${fmtKg(l.kg)}</p>
         <p class="sub">${fmtDateCorta(l.fecha)} · ${fmt(l.costo_kg)}/kg${l.transporte?(' · flete '+fmt(l.transporte)):''}</p>
       </div>
       <div class="der">
@@ -1750,7 +1800,7 @@ function renderListaMermas(lista){
   if(lista.length===0){ cont.innerHTML = '<div class="vacio">Sin registros de merma</div>'; return; }
   cont.innerHTML = lista.map(m=>`
     <div class="item-row">
-      <div class="info"><p class="nom">${m.fruto_nombre} — ${fmtNum(m.kg)} kg</p><p class="sub">${fmtDateCorta(m.fecha)}${m.motivo?(' · '+m.motivo):''}</p></div>
+      <div class="info"><p class="nom">${m.fruto_nombre} — ${fmtKg(m.kg)}</p><p class="sub">${fmtDateCorta(m.fecha)}${m.motivo?(' · '+m.motivo):''}</p></div>
       <div class="der"><div class="acciones"><button data-editar-merma="${m.id}" title="Editar">✎</button></div></div>
     </div>
   `).join('');
@@ -1771,7 +1821,7 @@ function abrirSugerencias(){
       <div class="combo-mini">
         <div class="top"><span>${s.ingredientes.map(i=>i.nombre+' '+i.gramos+'g').join(' + ')}</span><span style="color:var(--green)">${fmt(s.utilidadTotal)}</span></div>
         <div class="meta">${s.presentacion} (${s.gramos}g) · costo ${fmt(s.costoBolsa)} · precio ${fmt(s.precio)} · margen ${s.margenReal}%</div>
-        <div class="meta">Rinde ${s.maxBolsas} bolsas · sobrante ${fmtNum(s.desperdicioKg)} kg</div>
+        <div class="meta">Rinde ${s.maxBolsas} bolsas · sobrante ${fmtKg(s.desperdicioKg)}</div>
         <button class="btn btn-primary btn-sm btn-full" style="margin-top:8px" data-producir="${idx}">Producir esta mezcla</button>
       </div>
     `).join('') || '<div class="vacio">No hay suficiente inventario o margen para sugerir mezclas todavía.</div>'}</div>
