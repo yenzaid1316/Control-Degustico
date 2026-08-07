@@ -906,8 +906,16 @@ function abrirDetalleCliente(clienteId){
   const puedeEliminar = cart.totalAdeudado<=0.5;
   openDrawer(`
     <div class="drawer-title">${cliente.nombre}</div>
-    <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="fm-nombre-cliente" value="${cliente.nombre}"></div>
-    <div class="form-group"><label class="form-label">Teléfono (opcional)</label><input class="form-input" id="fm-telefono-cliente" type="text" value="${cliente.telefono||''}"></div>
+    <div class="form-row">
+      <div class="form-group"><label class="form-label">Nombre</label><input class="form-input" id="fm-nombre-cliente" value="${cliente.nombre}"></div>
+      <div class="form-group"><label class="form-label">Teléfono (opcional)</label><input class="form-input" id="fm-telefono-cliente" type="text" value="${cliente.telefono||''}"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Lugar</label>
+      <input class="form-input" id="fm-lugar-cliente" type="text" list="lista-lugares-cliente-dl" value="${cliente.lugar||''}" placeholder="Ej: Oficina centro">
+      <datalist id="lista-lugares-cliente-dl">${listaLugaresUsados().map(l=>`<option value="${l}">`).join('')}</datalist>
+      <p style="font-size:11.5px;color:var(--txt3);margin-top:4px">Al guardar, se aplica a todas las ventas a crédito ya registradas de este cliente.</p>
+    </div>
     <div class="form-group">
       <label class="form-label">Límite de crédito ($, 0 = sin límite)</label>
       <div class="form-row">
@@ -940,16 +948,24 @@ function abrirDetalleCliente(clienteId){
   document.getElementById('btn-guardar-limite').addEventListener('click', async function(){
     const nombre = document.getElementById('fm-nombre-cliente').value.trim() || cliente.nombre;
     const telefono = document.getElementById('fm-telefono-cliente').value.trim();
+    const lugar = document.getElementById('fm-lugar-cliente').value.trim();
     const limite_credito = parseFloat(document.getElementById('fm-limite').value)||0;
     if(limite_credito<0){ alert('El límite de crédito no puede ser un número negativo'); return; }
     this.disabled=true; this.textContent='Guardando...';
     try{
-      await DB.actualizar('clientes', {id:clienteId, nombre, telefono, limite_credito});
+      await DB.actualizar('clientes', {id:clienteId, nombre, telefono, limite_credito, lugar});
+      if(lugar){
+        const ventasParaActualizar = DB.ventas().filter(v=>v.cliente_id===clienteId && !v.anulada && v.metodo_pago==='credito' && v.lugar!==lugar);
+        for(const v of ventasParaActualizar){
+          await DB.actualizar('ventas', {id:v.id, lugar});
+        }
+      }
       mostrarToast('✅ Datos actualizados');
-      const titulo = document.querySelector('.drawer-title');
-      if(titulo) titulo.textContent = nombre;
-    } catch(e){ mostrarToast('❌ '+e.message); }
-    this.disabled=false; this.textContent='Guardar';
+      abrirDetalleCliente(clienteId);
+    } catch(e){
+      mostrarToast('❌ '+e.message);
+      this.disabled=false; this.textContent='Guardar';
+    }
   });
   const btnDelCliente = document.getElementById('btn-eliminar-cliente');
   if(btnDelCliente) btnDelCliente.addEventListener('click', async function(){
@@ -1216,6 +1232,12 @@ function abrirConfirmarVenta(){
     </div>
     <button class="btn btn-primary btn-full" id="btn-guardar-venta">Registrar venta</button>
   `);
+  document.getElementById('fm-cliente').addEventListener('input', function(){
+    const fmLugar = document.getElementById('fm-lugar');
+    if(fmLugar.value.trim()) return; // no sobreescribir lo que el usuario ya escribió
+    const match = DB.clientes().find(c=>c.nombre.trim().toLowerCase()===this.value.trim().toLowerCase());
+    if(match && match.lugar) fmLugar.value = match.lugar;
+  });
   document.getElementById('fm-metodo').addEventListener('change', function(){
     const esCredito = this.value==='credito';
     document.getElementById('grupo-cliente').style.display = esCredito ? 'block' : 'none';
