@@ -925,12 +925,18 @@ function abrirDetalleCliente(clienteId){
           <p class="sub">Pendiente: ${fmt(v.pendiente)} · <span class="badge ${v.estado}">${v.estado}</span> ${v.dias?('· día '+v.dias):''}${v.lugar?(' · '+v.lugar):''}</p>
         </div>
         <div class="der">
+          <div class="acciones"><button data-editar-venta-cliente="${v.id}" title="Editar venta">✎</button></div>
           ${v.abonado>0 ? `<button class="btn btn-secondary btn-sm" data-ver-abonos="${v.id}">Abonos</button>` : ''}
           ${v.pendiente>0 ? `<button class="btn btn-secondary btn-sm" data-abonar="${v.id}">Abonar</button>` : ''}
         </div>
       </div>`).join('') || '<div class="vacio">Sin ventas a crédito</div>'}
     </div>
   `);
+  document.querySelectorAll('[data-editar-venta-cliente]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      abrirEditarVenta(this.getAttribute('data-editar-venta-cliente'), ()=>abrirDetalleCliente(clienteId));
+    });
+  });
   document.getElementById('btn-guardar-limite').addEventListener('click', async function(){
     const nombre = document.getElementById('fm-nombre-cliente').value.trim() || cliente.nombre;
     const telefono = document.getElementById('fm-telefono-cliente').value.trim();
@@ -1269,9 +1275,10 @@ async function reversarVenta(ventaId, btn){
   }
 }
 
-function abrirEditarVenta(ventaId){
+function abrirEditarVenta(ventaId, alVolver){
   const venta = DB.ventas().find(v=>v.id===ventaId);
   if(!venta || venta.anulada) return;
+  const volver = typeof alVolver==='function' ? alVolver : renderVenta;
   const esCredito = venta.metodo_pago==='credito';
   const combosTodos = listaCombosResumen();
   let itemsEdit = (venta.items||[]).map(it=>Object.assign({}, it));
@@ -1390,7 +1397,7 @@ function abrirEditarVenta(ventaId){
     try{
       await DB.actualizar('ventas', {id:venta.id, items:itemsEdit, total:nuevoTotal, costo_total:nuevoCosto, lugar});
       closeDrawer();
-      renderVenta();
+      volver();
       setTimeout(()=>mostrarToast('✅ Venta actualizada'),100);
     } catch(e){ mostrarToast('❌ '+e.message); this.disabled=false; this.textContent='Guardar cambios'; }
   });
