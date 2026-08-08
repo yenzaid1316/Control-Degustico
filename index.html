@@ -329,7 +329,10 @@ function kardexProducto(nombre, precio, desde, hasta){
   DB.ventas().filter(v=>!v.anulada).forEach(v=>{
     (v.items||[]).forEach(it=>{
       if(comboIds.indexOf(it.combo_id)!==-1){
-        salidas.push({fecha: String(v.fecha||'').slice(0,10), tipo:'venta', bolsas:-(Number(it.bolsas)||0)});
+        salidas.push({
+          fecha: String(v.fecha||'').slice(0,10), tipo:'venta', bolsas:-(Number(it.bolsas)||0),
+          metodoPago: v.metodo_pago, cliente: v.metodo_pago==='credito' ? (v.cliente_nombre||'') : ''
+        });
       }
     });
   });
@@ -1956,15 +1959,18 @@ function abrirKardexProducto(nombre, precio){
         <div class="valor">${fmtNum(k.saldoFinal)}</div>
       </div>
       <div class="section-title">Movimientos del periodo</div>
-      <div>${k.detalle.map(m=>`
-        <div class="item-row">
+      <div>${k.detalle.map(m=>{
+        const metodoTxt = m.tipo!=='venta' ? '' :
+          (m.metodoPago==='credito' ? ('Crédito - '+(m.cliente||'Sin nombre'))
+          : m.metodoPago==='transferencia' ? 'Transferencia' : 'Efectivo');
+        return `<div class="item-row">
           <div class="info">
-            <p class="nom">${iconoTipo[m.tipo]||''} ${m.tipo.charAt(0).toUpperCase()+m.tipo.slice(1)}</p>
+            <p class="nom">${iconoTipo[m.tipo]||''} ${m.tipo.charAt(0).toUpperCase()+m.tipo.slice(1)}${metodoTxt?(' · '+metodoTxt):''}</p>
             <p class="sub">${fmtDateCorta(m.fecha)} · saldo: ${fmtNum(m.saldoAcumulado)}</p>
           </div>
           <div class="der"><div class="monto ${m.bolsas>=0?'entrada':'salida'}">${m.bolsas>=0?'+':''}${fmtNum(m.bolsas)}</div></div>
-        </div>
-      `).join('') || '<div class="vacio">Sin movimientos en este periodo</div>'}</div>
+        </div>`;
+      }).join('') || '<div class="vacio">Sin movimientos en este periodo</div>'}</div>
     `;
   }
 
