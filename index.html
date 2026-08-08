@@ -311,38 +311,41 @@ function proyectarDisponibleTrasCambioCompra(nombre, kgAntes, kgDespues){
   const usado = kgUsadoEnCombos(nombre);
   return nuevoComprado - merma - usado;
 }
-// Kardex de entradas y salidas de un fruto seco en un rango de fechas [desde, hasta] (inclusive).
-// Entradas = compras (frutosSecos). Salidas = mermas + lo usado al producir combos (según la fecha del combo).
+// Kardex de unidades de un producto (combo) en un rango de fechas [desde, hasta] (inclusive).
+// Los lotes se agrupan por nombre + precio de venta (así "Mix" a $8.000 y "Mix" a $12.000 quedan separados).
+// Entradas = bolsas/unidades producidas (fecha del lote). Salidas = bolsas/unidades vendidas (ventas activas,
+// enlazadas por combo_id para no confundir con otro lote que tenga el mismo nombre y precio).
 // Devuelve inventario inicial (todo lo anterior a "desde"), totales del rango, saldo final,
 // y el detalle cronológico con el saldo acumulado después de cada movimiento.
-function kardexFruto(nombre, desde, hasta){
-  const entradas = DB.frutosSecos().filter(f=>f.nombre===nombre).map(f=>({
-    fecha: String(f.fecha||'').slice(0,10), tipo:'compra', kg:(Number(f.kg)||0), detalle:(Number(f.costo_kg)||0)+'/kg'
+function kardexProducto(nombre, precio, desde, hasta){
+  const comboIds = DB.combos()
+    .filter(c=>c.nombre===nombre && (Number(c.precio_venta||c.precio_sugerido)||0)===precio)
+    .map(c=>c.id);
+
+  const entradas = DB.combos().filter(c=>comboIds.indexOf(c.id)!==-1).map(c=>({
+    fecha: String(c.fecha||'').slice(0,10), tipo:'producción', bolsas:(Number(c.bolsas)||0)
   }));
-  const salidasMerma = DB.merma().filter(m=>m.fruto_nombre===nombre).map(m=>({
-    fecha: String(m.fecha||'').slice(0,10), tipo:'merma', kg:-(Number(m.kg)||0), detalle:m.motivo||''
-  }));
-  const salidasProduccion = [];
-  DB.combos().forEach(c=>{
-    (c.ingredientes||[]).forEach(ing=>{
-      if(ing.nombre===nombre){
-        salidasProduccion.push({fecha: String(c.fecha||'').slice(0,10), tipo:'producción', kg:-((Number(ing.gramos)||0)/1000), detalle:c.nombre});
+  const salidas = [];
+  DB.ventas().filter(v=>!v.anulada).forEach(v=>{
+    (v.items||[]).forEach(it=>{
+      if(comboIds.indexOf(it.combo_id)!==-1){
+        salidas.push({fecha: String(v.fecha||'').slice(0,10), tipo:'venta', bolsas:-(Number(it.bolsas)||0)});
       }
     });
   });
-  const todos = entradas.concat(salidasMerma, salidasProduccion).sort((a,b)=> a.fecha.localeCompare(b.fecha));
+  const todos = entradas.concat(salidas).sort((a,b)=> a.fecha.localeCompare(b.fecha));
 
   const antes = todos.filter(m=>m.fecha < desde);
   const enRango = todos.filter(m=>m.fecha >= desde && m.fecha <= hasta);
 
-  const inventarioInicial = antes.reduce((s,m)=>s+m.kg, 0);
-  const totalEntradas = enRango.filter(m=>m.kg>0).reduce((s,m)=>s+m.kg, 0);
-  const totalSalidas = -enRango.filter(m=>m.kg<0).reduce((s,m)=>s+m.kg, 0);
+  const inventarioInicial = antes.reduce((s,m)=>s+m.bolsas, 0);
+  const totalEntradas = enRango.filter(m=>m.bolsas>0).reduce((s,m)=>s+m.bolsas, 0);
+  const totalSalidas = -enRango.filter(m=>m.bolsas<0).reduce((s,m)=>s+m.bolsas, 0);
   const saldoFinal = inventarioInicial + totalEntradas - totalSalidas;
 
   let saldoAcumulado = inventarioInicial;
   const detalle = enRango.map(m=>{
-    saldoAcumulado += m.kg;
+    saldoAcumulado += m.bolsas;
     return Object.assign({}, m, {saldoAcumulado});
   });
 
@@ -1569,6 +1572,7 @@ function renderListaCombos(combos){
       </div>
       <div class="der">
         <div class="acciones">
+          <button data-kardex-producto="${c.id}" title="Kardex de unidades">📋</button>
           <button data-editar-combo="${c.id}" title="Editar">✎</button>
           <button data-ficha="${c.id}" title="Ficha PDF">📄</button>
         </div>
@@ -1582,6 +1586,12 @@ function renderListaCombos(combos){
     btn.addEventListener('click', function(){
       const c = combos.find(x=>x.id===this.getAttribute('data-editar-combo'));
       if(c) abrirEditarCombo(c);
+    });
+  });
+  cont.querySelectorAll('[data-kardex-producto]').forEach(btn=>{
+    btn.addEventListener('click', function(){
+      const c = combos.find(x=>x.id===this.getAttribute('data-kardex-producto'));
+      if(c) abrirKardexProducto(c.nombre, Number(c.precio_efectivo)||0);
     });
   });
 }
@@ -1911,12 +1921,9 @@ function renderCardsInventario(frutos){
     const flete = transporteTotalCompras(f.nombre);
     return `
     <div class="card" style="margin-bottom:10px;${f.alerta?'border-color:rgba(224,92,92,.4)':''}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div style="font-size:16px;font-weight:500">${f.nombre}</div>
-        <div style="display:flex;align-items:center;gap:6px">
-          ${f.alerta?'<span class="badge vencido">stock bajo</span>':''}
-          <div class="acciones"><button data-kardex="${f.nombre}" title="Kardex de entradas y salidas">📋</button></div>
-        </div>
+        ${f.alerta?'<span class="badge vencido">stock bajo</span>':''}
       </div>
       <div style="margin:8px 0 6px">
         <div style="font-size:12px;color:var(--txt2);text-transform:uppercase;letter-spacing:.05em">Disponible ahora</div>
@@ -1929,44 +1936,40 @@ function renderCardsInventario(frutos){
       </div>
     </div>`;
   }).join('');
-  cont.querySelectorAll('[data-kardex]').forEach(btn=>{
-    btn.addEventListener('click', function(){ abrirKardexFruto(this.getAttribute('data-kardex')); });
-  });
 }
 
-function abrirKardexFruto(nombre){
+function abrirKardexProducto(nombre, precio){
   const hoy = today();
   const desdeDefault = hoy.slice(0,7)+'-01'; // primer día del mes actual
-  let ultimoDesde = desdeDefault, ultimoHasta = hoy;
 
   function renderContenido(desde, hasta){
-    const k = kardexFruto(nombre, desde, hasta);
-    const iconoTipo = {compra:'⬆️', merma:'⬇️', 'producción':'⬇️'};
+    const k = kardexProducto(nombre, precio, desde, hasta);
+    const iconoTipo = {'producción':'⬆️', venta:'⬇️'};
     return `
       <div class="grid3" style="margin-bottom:12px">
-        <div class="card-sm"><div class="lbl">Inv. inicial</div><div class="val">${fmtKg(k.inventarioInicial)}</div></div>
-        <div class="card-sm"><div class="lbl">Entradas</div><div class="val" style="color:var(--green)">${fmtKg(k.totalEntradas)}</div></div>
-        <div class="card-sm"><div class="lbl">Salidas</div><div class="val" style="color:var(--red)">${fmtKg(k.totalSalidas)}</div></div>
+        <div class="card-sm"><div class="lbl">Inv. inicial</div><div class="val">${fmtNum(k.inventarioInicial)}</div></div>
+        <div class="card-sm"><div class="lbl">Entradas</div><div class="val" style="color:var(--green)">${fmtNum(k.totalEntradas)}</div></div>
+        <div class="card-sm"><div class="lbl">Salidas</div><div class="val" style="color:var(--red)">${fmtNum(k.totalSalidas)}</div></div>
       </div>
       <div class="card-balance" style="margin-bottom:12px">
         <div class="label">Saldo final del periodo</div>
-        <div class="valor">${fmtKg(k.saldoFinal)}</div>
+        <div class="valor">${fmtNum(k.saldoFinal)}</div>
       </div>
       <div class="section-title">Movimientos del periodo</div>
       <div>${k.detalle.map(m=>`
         <div class="item-row">
           <div class="info">
-            <p class="nom">${iconoTipo[m.tipo]||''} ${m.tipo.charAt(0).toUpperCase()+m.tipo.slice(1)}${m.detalle?(' · '+m.detalle):''}</p>
-            <p class="sub">${fmtDateCorta(m.fecha)} · saldo: ${fmtKg(m.saldoAcumulado)}</p>
+            <p class="nom">${iconoTipo[m.tipo]||''} ${m.tipo.charAt(0).toUpperCase()+m.tipo.slice(1)}</p>
+            <p class="sub">${fmtDateCorta(m.fecha)} · saldo: ${fmtNum(m.saldoAcumulado)}</p>
           </div>
-          <div class="der"><div class="monto ${m.kg>=0?'entrada':'salida'}">${m.kg>=0?'+':''}${fmtKg(m.kg)}</div></div>
+          <div class="der"><div class="monto ${m.bolsas>=0?'entrada':'salida'}">${m.bolsas>=0?'+':''}${fmtNum(m.bolsas)}</div></div>
         </div>
       `).join('') || '<div class="vacio">Sin movimientos en este periodo</div>'}</div>
     `;
   }
 
   openDrawer(`
-    <div class="drawer-title">Kardex — ${nombre}</div>
+    <div class="drawer-title">Kardex — ${nombre} (${fmt(precio)})</div>
     <div class="form-row" style="margin-bottom:12px">
       <div class="form-group"><label class="form-label">Desde</label><input class="form-input" id="fm-kardex-desde" type="date" value="${desdeDefault}"></div>
       <div class="form-group"><label class="form-label">Hasta</label><input class="form-input" id="fm-kardex-hasta" type="date" value="${hoy}"></div>
@@ -1978,7 +1981,6 @@ function abrirKardexFruto(nombre){
     const desde = document.getElementById('fm-kardex-desde').value || desdeDefault;
     const hasta = document.getElementById('fm-kardex-hasta').value || hoy;
     if(desde > hasta){ mostrarToast('⚠️ La fecha "Desde" no puede ser posterior a "Hasta"'); return; }
-    ultimoDesde = desde; ultimoHasta = hasta;
     document.getElementById('kardex-contenido').innerHTML = renderContenido(desde, hasta);
   }
   document.getElementById('fm-kardex-desde').addEventListener('change', recalcular);
