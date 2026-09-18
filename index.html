@@ -1186,7 +1186,11 @@ function renderListaProductos(combos){
   cont.querySelectorAll('[data-mas]').forEach(btn=>{
     btn.addEventListener('click', function(){
       const id = this.getAttribute('data-mas');
-      const combo = combos.find(c=>c.id===id);
+      // Se busca en datos frescos (no en la lista con la que se dibujó la pantalla) para detectar
+      // si el producto cambió o desapareció (editado/eliminado, o llegó un lote nuevo) mientras
+      // la tarjeta seguía visible, en vez de operar sobre una "foto" vieja.
+      const combo = listaCombosResumen().find(c=>c.id===id);
+      if(!combo){ mostrarToast('⚠️ Este producto se actualizó, vuelve a entrar a Venta'); renderVenta(); return; }
       const actual = _carrito[id]||0;
       if(actual >= combo.bolsas_disponibles){ mostrarToast('⚠️ No hay más disponibles'); return; }
       _carrito[id] = actual+1;
@@ -1209,24 +1213,27 @@ function renderListaProductos(combos){
 
 function carritoResumen(){
   const combos = listaCombosResumen();
-  let total = 0, costoTotal = 0, items = [];
+  let total = 0, costoTotal = 0, items = [], huboHuerfanos = false;
   Object.keys(_carrito).forEach(id=>{
     const cant = _carrito[id];
     if(cant<=0) return;
     const combo = combos.find(c=>c.id===id);
-    if(!combo) return;
+    // El producto ya no existe con ese id (se editó/eliminó o se produjo un lote nuevo
+    // mientras estaba en el carrito): lo quitamos solo, sin dejar el carrito "fantasma".
+    if(!combo){ delete _carrito[id]; huboHuerfanos = true; return; }
     const precio = Number(combo.precio_efectivo)||0;
     const costo = Number(combo.costo_bolsa)||0;
     total += cant*precio;
     costoTotal += cant*costo;
     items.push({combo_id:id, nombre:combo.nombre, bolsas:cant, precio_unit:precio, costo_unit:costo});
   });
-  return {items, total, costoTotal};
+  return {items, total, costoTotal, huboHuerfanos};
 }
 
 function renderCartBar(){
   let bar = document.getElementById('cart-bar');
-  const {items, total} = carritoResumen();
+  const {items, total, huboHuerfanos} = carritoResumen();
+  if(huboHuerfanos){ mostrarToast('⚠️ Un producto del carrito se actualizó y se quitó, vuelve a agregarlo'); }
   if(items.length===0){ if(bar) bar.remove(); return; }
   const bolsas = items.reduce((s,i)=>s+i.bolsas,0);
   const html = `
@@ -1247,8 +1254,11 @@ function renderCartBar(){
 }
 
 function abrirConfirmarVenta(){
-  const {items, total, costoTotal} = carritoResumen();
-  if(items.length===0) return;
+  const {items, total, costoTotal, huboHuerfanos} = carritoResumen();
+  if(items.length===0){
+    if(huboHuerfanos){ mostrarToast('⚠️ El carrito se actualizó, vuelve a agregar el producto'); renderVenta(); }
+    return;
+  }
   openDrawer(`
     <div class="drawer-title">Confirmar venta</div>
     <div style="margin-bottom:12px">
