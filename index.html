@@ -145,14 +145,17 @@ const COLECCIONES = ['frutosSecos','merma','presentaciones','combos','clientes',
 window.DB = {
   _get(k){ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch{ return null; } },
   _set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }catch(e){ return false; } },
-  frutosSecos(){ return this._get('frutosSecos')||[]; },
-  merma(){ return this._get('merma')||[]; },
-  presentaciones(){ return this._get('presentaciones')||[]; },
-  combos(){ return this._get('combos')||[]; },
-  clientes(){ return this._get('clientes')||[]; },
-  ventas(){ return this._get('ventas')||[]; },
-  abonos(){ return this._get('abonos')||[]; },
-  movimientos(){ return this._get('movimientos')||[]; },
+  // Filtra cualquier fila vacía/mal formada que pueda venir de Google Sheets (fila en blanco,
+  // fila sin id, celda corrida) para que un dato sucio en una hoja no rompa toda la app.
+  _arr(k){ return (this._get(k)||[]).filter(r=>r && typeof r==='object' && r.id); },
+  frutosSecos(){ return this._arr('frutosSecos'); },
+  merma(){ return this._arr('merma'); },
+  presentaciones(){ return this._arr('presentaciones'); },
+  combos(){ return this._arr('combos'); },
+  clientes(){ return this._arr('clientes'); },
+  ventas(){ return this._arr('ventas'); },
+  abonos(){ return this._arr('abonos'); },
+  movimientos(){ return this._arr('movimientos'); },
   config(){ return this._get('config')||{}; },
   async crear(entity, data){
     const r = await gsWrite('create', entity, data);
@@ -1250,7 +1253,13 @@ function renderCartBar(){
     document.body.appendChild(bar);
   }
   bar.innerHTML = html;
-  document.getElementById('btn-confirmar-venta').addEventListener('click', abrirConfirmarVenta);
+  document.getElementById('btn-confirmar-venta').addEventListener('click', function(){
+    // Red de seguridad: si algo inesperado truena al armar la ventana de confirmación
+    // (dato raro en el Sheet, etc.), que el usuario vea un aviso en vez de que el botón
+    // "no haga nada" en silencio.
+    try{ abrirConfirmarVenta(); }
+    catch(e){ console.error('Error al abrir confirmar venta:', e); mostrarToast('❌ No se pudo abrir: '+e.message); }
+  });
 }
 
 function abrirConfirmarVenta(){
