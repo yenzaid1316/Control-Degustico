@@ -142,12 +142,39 @@ async function gsWrite(action, entity, data){
 
 const COLECCIONES = ['frutosSecos','merma','presentaciones','combos','clientes','ventas','abonos','movimientos'];
 
+// Campos de texto libre que Google Sheets puede "auto-convertir" a número si alguien escribe
+// algo que parece un número (ej: un lugar de venta llamado "13", o un nombre solo con dígitos).
+// Si eso llega así al cliente, cualquier .localeCompare()/.toLowerCase()/.trim() sobre ese campo
+// truena en silencio. Se normalizan siempre a texto para blindar contra eso.
+const CAMPOS_TEXTO = {
+  clientes: ['nombre','telefono','lugar'],
+  ventas: ['cliente_nombre','lugar','metodo_pago'],
+  combos: ['nombre','tipo'],
+  frutosSecos: ['nombre'],
+  movimientos: ['tipo','motivo'],
+  merma: ['motivo'],
+  presentaciones: ['nombre']
+};
+function normalizarTexto(entity, r){
+  const campos = CAMPOS_TEXTO[entity];
+  if(!campos) return r;
+  let out = r;
+  for(const campo of campos){
+    if(r[campo]!=null && typeof r[campo]!=='string'){
+      if(out===r) out = Object.assign({}, r);
+      out[campo] = String(r[campo]);
+    }
+  }
+  return out;
+}
+
 window.DB = {
   _get(k){ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch{ return null; } },
   _set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }catch(e){ return false; } },
   // Filtra cualquier fila vacía/mal formada que pueda venir de Google Sheets (fila en blanco,
-  // fila sin id, celda corrida) para que un dato sucio en una hoja no rompa toda la app.
-  _arr(k){ return (this._get(k)||[]).filter(r=>r && typeof r==='object' && r.id); },
+  // fila sin id, celda corrida), y normaliza a texto los campos de texto libre (ver CAMPOS_TEXTO)
+  // para que un dato sucio en una hoja no rompa toda la app.
+  _arr(k){ return (this._get(k)||[]).filter(r=>r && typeof r==='object' && r.id).map(r=>normalizarTexto(k,r)); },
   frutosSecos(){ return this._arr('frutosSecos'); },
   merma(){ return this._arr('merma'); },
   presentaciones(){ return this._arr('presentaciones'); },
@@ -541,7 +568,7 @@ function estadoCredito(venta){
 }
 function carteraCliente(clienteId, lugar){
   let ventasCliente = DB.ventas().filter(v=>!v.anulada && v.metodo_pago==='credito' && v.cliente_id===clienteId);
-  if(lugar){ ventasCliente = ventasCliente.filter(v=> (v.lugar||'Sin lugar')===lugar); }
+  if(lugar){ ventasCliente = ventasCliente.filter(v=> String(v.lugar||'Sin lugar')===lugar); }
   let totalAdeudado = 0;
   const detalle = ventasCliente.map(v=>{
     const est = estadoCredito(v);
@@ -562,7 +589,7 @@ function carteraPorLugar(){
   DB.ventas().filter(v=>!v.anulada && v.metodo_pago==='credito').forEach(v=>{
     const est = estadoCredito(v);
     if(est.pendiente<=0.5) return;
-    const key = v.lugar || 'Sin lugar';
+    const key = v.lugar ? String(v.lugar) : 'Sin lugar';
     if(!map[key]) map[key] = {lugar:key, total:0, ventas:0};
     map[key].total += est.pendiente;
     map[key].ventas += 1;
@@ -572,7 +599,10 @@ function carteraPorLugar(){
 // Lugares usados alguna vez en ventas a crédito, para sugerir en el datalist del formulario.
 function listaLugaresUsados(){
   const set = new Set();
-  DB.ventas().forEach(v=>{ if(v.lugar) set.add(v.lugar); });
+  // String(...) por si "lugar" llegó como número desde Sheets (ej. alguien escribió "13" como
+  // lugar y Sheets lo autoconvirtió): sin esto, el .sort() de abajo truena con
+  // "a.localeCompare is not a function" y toda la pantalla de confirmar venta se queda muda.
+  DB.ventas().forEach(v=>{ if(v.lugar) set.add(String(v.lugar)); });
   return Array.from(set).sort((a,b)=>a.localeCompare(b));
 }
 // Cuánto quedaría disponible de un combo si esta venta (la que se está editando) no existiera.
